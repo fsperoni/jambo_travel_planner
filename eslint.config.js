@@ -23,6 +23,20 @@ export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommended,
 
+  // Express identifies an error-handling middleware by its parameter count
+  // (err, req, res, next) alone, and a Request's "unused" params are
+  // routinely needed just to match a handler signature (e.g. a 404 handler
+  // that only uses `req`). An underscore prefix is the conventional way to
+  // mark a required-but-unused parameter as intentional.
+  {
+    rules: {
+      "@typescript-eslint/no-unused-vars": [
+        "error",
+        { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
+      ],
+    },
+  },
+
   // apps/api runs under Node, no browser/DOM globals.
   {
     files: ["apps/api/**/*.ts"],

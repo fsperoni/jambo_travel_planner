@@ -51,7 +51,8 @@ with hand-written SQL repositories (no ORM), [node-pg-migrate](https://github.co
 for schema migrations, bcrypt for password hashing, `jsonwebtoken` for access tokens, Helmet,
 a CORS allowlist, and `express-rate-limit`.
 
-**Data:** PostgreSQL (`users` and `refresh_tokens` only — see [Why PostgreSQL](#why-postgresql)),
+**Data:** PostgreSQL (`users`, plus `refresh_tokens` if the refresh-token enhancement lands —
+see [Why PostgreSQL](#why-postgresql)),
 [Open-Meteo](https://open-meteo.com) for weather, the [Wikipedia REST API](https://en.wikipedia.org/api/rest_v1/)
 for city descriptions, [ipapi.co](https://ipapi.co) for IP geolocation.
 
@@ -76,17 +77,24 @@ TypeScript, and Express.
 Angular was seriously considered, not dismissed by default. If it's useful in the
 walkthrough, the concepts map fairly directly: this project's `api/` client modules are the
 rough equivalent of Angular injectable services, the `AuthProvider` React context plays the
-role of a singleton auth service, and the fetch wrapper's automatic 401-refresh-retry logic is
-the same idea as an Angular `HttpInterceptor`.
+role of a singleton auth service, and the fetch wrapper that attaches the Bearer token and
+reacts to a 401 is the same idea as an Angular `HttpInterceptor`.
 
 ## Why Express
 
-_(Also covers why not NestJS.)_ Coming alongside [Architecture overview](#architecture-overview)
-in Stage 1.
+The job description names Node.js/TypeScript with Express (or a similar framework) as
+preferred, so Express is the direct match rather than a workaround. NestJS — the closer
+Node.js analogue to Angular, with its own dependency injection, decorators, and module system
+— was considered and set aside for the same reason as the frontend framework choice: it adds
+concepts (DI containers, decorator-based routing, guards, pipes) that aren't necessary at this
+project's size and that I'd rather not have to explain in a walkthrough alongside everything
+else. Express's request → middleware → handler model is simple enough that the whole request
+lifecycle (see [Architecture overview](#architecture-overview)) fits in a few files I wrote
+and understand end to end.
 
 ## Why PostgreSQL
 
-_Coming in Stage 2._
+_Coming in Stage 2, once the first table exists._
 
 ## Why these external APIs
 
@@ -94,7 +102,32 @@ _Coming in Stages 4–6, alongside the weather/description/geolocation implement
 
 ## Architecture overview
 
-_Coming in Stage 1._
+The backend follows a fairly conventional Express layering — `controllers` parse a request and
+call a `service`, which holds the actual business logic and talks to a `repository` (database)
+or a `client` (external API). None of the layers above `middleware`/`errors`/`config` exist yet
+as of Stage 1; this section grows with them.
+
+**`createApp()` vs `server.ts`.** `app.ts` exports a `createApp(deps)` function that builds and
+returns the configured Express app — it never calls `.listen()`. `server.ts` is the only file
+that does: it loads and validates env, builds the app, starts the HTTP listener, and wires
+graceful shutdown. The split exists so integration tests can import `createApp`, build the app
+directly, and drive it with Supertest — no port to bind, no process to keep alive, no leftover
+server between test files.
+
+**Errors.** Anything in a controller, service, or middleware that needs to fail with a specific
+HTTP status throws an `AppError` (`status`, a stable machine-readable `code`, a client-safe
+`message`, optional `details`). A single `errorHandler` middleware, mounted last, is the only
+place that turns any thrown error into a JSON response — including a `ZodError` from failed
+validation (mapped to 400) and anything unrecognized (mapped to a generic 500, logged
+server-side, no stack trace or internal detail ever sent to the client). Centralizing this in
+one place means no controller has to remember to catch and format its own errors.
+
+**Request validation.** Each route that needs it declares Zod schemas via a `validate({ body,
+query, params })` middleware. Express 5 made `req.query` a read-only property (no setter) — an
+intentional framework change, not a bug I introduced — so instead of mutating `req.body` and
+`req.params` in place while doing something different for `req.query`, validated input for all
+three always lands on one `req.valid` property. Controllers read from there; it's a single,
+predictable place regardless of which part of the request a value came from.
 
 ## Monorepo structure
 
@@ -102,6 +135,13 @@ _Coming in Stage 1._
 jambo-travel-planner/            (repo root)
   apps/
     api/                         # Express/TypeScript backend
+      src/
+        app.ts                   # createApp(deps): middleware + routes, no listen()
+        server.ts                # bootstrap: load env, listen, graceful shutdown
+        config/env.ts            # Zod-validated env; fails fast at startup
+        errors/app-error.ts      # AppError + subclasses
+        middleware/              # validate, error-handler, not-found
+      test/                      # integration tests (Supertest)
     web/                         # React/TypeScript frontend (Vite)
   e2e/                           # Playwright end-to-end tests (Stage 9)
   .github/workflows/ci.yml       # lint, typecheck, test on every push
@@ -119,11 +159,19 @@ justify the extra package.
 
 ## Authentication
 
-_Coming in Stage 2 (access tokens) and Stage 8 (refresh tokens)._
+_Coming in Stage 2: a JWT access token in memory, sent as `Authorization: Bearer`, is enough on
+its own to satisfy the assignment. Stage 8 (refresh tokens, an HttpOnly cookie) is a
+conditional enhancement built only once Stages 0–7 are a complete, polished submission on
+their own — see [Trade-offs](#trade-offs) once that section lands._
 
 ## Security considerations
 
-_Coming in Stage 2, expanded through Stage 10._
+In place as of Stage 1: Helmet's baseline security headers on every response, a CORS
+allowlist restricting which origins may call the API from a browser at all, a small JSON
+body-size limit, and a central error handler that never sends a stack trace, an internal error
+message, or any other implementation detail to the client — only a stable `code` and a
+client-safe `message`. The rest (JWT/auth-specific concerns, CSRF/XSS implications of the
+token architecture, rate limiting) is expanded starting Stage 2 and through Stage 10.
 
 ## IP-based geolocation
 
@@ -135,24 +183,42 @@ _Coming in Stage 7._
 
 ## API overview
 
-_Coming in Stage 1, filled in as endpoints land._
+| Method & path | Auth | Purpose                                                            |
+| ------------- | ---- | ------------------------------------------------------------------ |
+| `GET /health` | none | `{ "status": "ok" }` — used by the hosting platform's health check |
+
+More endpoints land starting Stage 2. Every error response uses the same envelope:
+`{ "error": { "code": "SOME_CODE", "message": "...", "details"?: [...] } }`.
 
 ## Local setup
 
-_Coming in Stage 1 once the API has something to run. In the meantime:_
-
 ```bash
-npm install
+npm install               # installs both apps' dependencies (npm workspaces)
 npm run lint
 npm run typecheck
 npm test
+
+cd apps/api
+npm run dev                # starts the API on http://localhost:3000
 ```
 
-Requires Node.js 24+ (see `.nvmrc`).
+Requires Node.js 24+ (see `.nvmrc`). No database or `.env` file is required yet — the API only
+needs env vars from Stage 2 onward.
 
 ## Environment variables
 
-_Coming in Stage 1._
+All backend env vars are validated at startup (`apps/api/src/config/env.ts`); the process
+refuses to start if one is missing or malformed, with a message naming the offending variable.
+
+| Variable       | Required | Default                 | Purpose                                                                                                     |
+| -------------- | -------- | ----------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `NODE_ENV`     | no       | `development`           | `development` \| `test` \| `production`                                                                     |
+| `PORT`         | no       | `3000`                  | HTTP port the API listens on                                                                                |
+| `CORS_ORIGINS` | no       | `http://localhost:5173` | Comma-separated list of origins allowed to call the API from a browser (the Vite dev server's default port) |
+
+More variables (`DATABASE_URL`, `JWT_SECRET`, `ACCESS_TOKEN_TTL`, `TRUST_PROXY_HOPS`,
+`DEFAULT_CITY_ID`, provider base URLs) are added as the stages that need them land — see the
+table grow here rather than all at once.
 
 ## Database / migrations
 
@@ -172,8 +238,16 @@ Playwright end-to-end test (`npm run e2e`, Stage 9) is separate from `npm test`.
 
 ## Testing strategy
 
-_Coming in Stage 2, expanded through Stage 9. See the project's testing matrix for the full
-requirement-to-test mapping._
+As of Stage 1: unit tests live next to the file they test (`src/**/*.test.ts`) and cover
+logic that can actually be wrong — env parsing/defaults, the validation middleware, and the
+central error handler's mapping from a thrown error to an HTTP response (including that a
+generic message reaches the client while the real error is only logged server-side).
+Integration tests live under `apps/api/test/` and exercise the whole wired-up app over real
+HTTP with Supertest, rather than one function at a time — currently just `/health` and the
+404 fallback. Coverage (`npm run test:coverage`) is scoped to directories with real logic
+(`config`, `errors`, `middleware`, and `services`/`domain`/`clients` once they exist), not
+boilerplate like route wiring — there's no 100% target. Expanded through Stage 9; see the
+project's testing matrix for the full requirement-to-test mapping.
 
 ## Deployment architecture
 

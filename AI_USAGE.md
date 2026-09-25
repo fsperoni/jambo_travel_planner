@@ -85,3 +85,78 @@ I kept linting lightweight and run `tsc --noEmit` separately for type correctnes
 Verified locally rather than assumed: `npm install`, `npm run lint`, `npm run typecheck`,
 `npm test`, `npm run test:coverage`, and `npm run format:check` all run clean before treating
 the stage as done.
+
+## 2026-09-24 - Stage 1: API foundation
+
+**Tool:** Claude Code.
+
+Built the base Express app: `config/env.ts` (Zod-validated env, fails fast with a readable
+error naming the offending variable), `app.ts` (`createApp(deps)`, no listener) and
+`server.ts` (the actual bootstrap, plus graceful shutdown on SIGTERM/SIGINT), Helmet, a CORS
+allowlist, an `AppError` base class with a central `errorHandler` middleware, and a
+`validate()` middleware backed by Zod.
+
+One real gotcha surfaced and got fixed rather than papered over: Express 5 made `req.query`
+read-only (no setter) - confirmed by writing a two-line reproduction against the actual
+installed Express version rather than assuming based on prior versions' behavior. Since
+`req.body` and `req.params` are still writable, the easy path would have been to special-case
+query differently from the other two. Instead, validated input for all three always goes
+through one `req.valid` property, so there's one consistent place to read from regardless of
+which part of the request it came from - documented inline in `types/express.d.ts` since it's
+exactly the kind of thing worth explaining rather than leaving as an unexplained asymmetry.
+
+**What I changed:** the initial `tsconfig.json` set both `rootDir: "src"` and included
+`test`/`scripts` directories, which don't type-check together (TypeScript won't allow files
+outside `rootDir`). Rather than force everything under `src`, split it: the main
+`tsconfig.json` (used for `--noEmit` typechecking) has no `rootDir` and can see `test` and
+`scripts`; `tsconfig.build.json` (the one that actually emits `dist/`) sets `rootDir: "src"`
+and excludes `test`/`scripts`, so the compiled output only ever contains real server code.
+
+Verified beyond the automated checks: ran the actual server with `tsx` (not just Supertest
+against `createApp`), curled `/health` and a 404 route to see the real headers and JSON
+envelope, then sent it a real `SIGTERM` and confirmed it logged the shutdown message and
+exited instead of hanging or dropping the connection.
+
+## 2026-09-25 - Final simplification pass (before Stage 2)
+
+**Tool:** Claude Code.
+
+Before continuing past Stage 1, I asked for one more review pass of the plan specifically
+looking for over-engineering and "walkthrough traps" - places where I'd be defending
+complexity that didn't earn its place for an Intermediate-level take-home. A few things got
+cut or made conditional:
+
+- **Refresh tokens (Stage 8) are now explicitly conditional**, not a fixed part of the
+  submission. Stages 0-7 have to stand on their own as a complete, polished submission first;
+  refresh tokens are an enhancement attempted only once that's true, not a dependency for
+  satisfying the assignment. If skipped, a page reload just requires logging in again - no
+  localStorage shortcut to fake persistence.
+- **Removed the IP-range classification plan.** The original design had a hand-maintained
+  `node:net.BlockList` covering RFC1918 ranges, link-local, CGNAT, etc. That's networking
+  trivia with nothing to show for it at this project's scope - `trust proxy` plus the
+  geolocation provider's own validation plus a graceful fallback covers the actual
+  requirement ("use the IP, default sensibly") without a range catalogue I'd have to defend
+  line by line.
+- **Rate limiting scoped down to the login endpoint only** (and `/refresh`, if Stage 8
+  happens). A general API-wide rate limiter was in the original plan; it adds configuration
+  and `req.ip`/proxy interactions with no real problem behind it at this scale. I'd rather say
+  "I rate-limited the auth endpoints; a production public API would get per-user/per-IP limits
+  based on real usage" than defend an arbitrary global threshold.
+- **The in-memory TTL cache is now explicitly optional and droppable**, not a committed
+  feature. If it doesn't stay to about 20 lines, it doesn't ship - "the implementation calls
+  upstream APIs directly" is a perfectly fine answer for a take-home.
+
+**A concrete AI mistake, caught and fixed rather than shipped:** the plan's auth-flow diagram
+was Mermaid `sequenceDiagram` syntax with a semicolon inside a message label
+(`"...Secure, SameSite, Path=/api/auth"` - the parser reads `;` as ending the statement, so
+the diagram didn't actually render. I wouldn't have caught this by reading the plan text; it
+only showed up because I asked whether the diagrams actually render before trusting them for
+the README. Replaced with two smaller, valid diagrams (the core Bearer flow, and the Stage 8
+refresh flow) - simpler individually and actually checked to parse.
+
+**What changed in already-written Stage 1 code as a result:** `app.ts` had `credentials: true`
+on the CORS config, added in anticipation of the (now-conditional) refresh cookie. Removed it -
+the Bearer header the frontend attaches doesn't need it, and shipping it before there's a
+cookie that needs it is exactly the kind of thing I couldn't have defended if asked "why is
+this here?" in the walkthrough. Updated the matching comments in `env.ts` and a few README
+sentences that referenced the old assumption.
