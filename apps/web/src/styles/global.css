@@ -1,0 +1,13 @@
+/* Design tokens and global resets are added in Stage 3, alongside the app shell. */
+:root {
+  color-scheme: light dark;
+}
+
+body {
+  margin: 0;
+  font-family:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    sans-serif;
+}

@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    # A PostgreSQL service container is required starting Stage 2 (auth) for
+    # the integration tests, which run against a real database rather than a
+    # mock (see the testing strategy in the README). It's declared from the
+    # start so later stages don't need to touch the workflow's job shape.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: jambo
+          POSTGRES_PASSWORD: jambo
+          POSTGRES_DB: jambo_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      TEST_DATABASE_URL: postgres://jambo:jambo@localhost:5432/jambo_test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run format:check
+
+      - run: npm run lint
+
+      - run: npm run typecheck
+
+      - run: npm run test:coverage
