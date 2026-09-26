@@ -44,4 +44,7 @@ jobs:
 
       - run: npm run typecheck
 
+      - name: Apply migrations to the test database
+        run: npm run db:migrate:test -w @jambo/api
+
       - run: npm run test:coverage

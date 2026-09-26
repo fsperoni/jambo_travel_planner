@@ -21,6 +21,20 @@ const envSchema = z.object({
         .map((origin) => origin.trim())
         .filter(Boolean),
     ),
+
+  DATABASE_URL: z.url("DATABASE_URL must be a valid connection string, e.g. postgres://..."),
+
+  // HS256 signing secret for access tokens. 32 bytes/chars is the minimum
+  // for HS256 to provide its intended security margin (a shorter secret is
+  // brute-forceable); this doesn't validate that it's *random*, only that
+  // it's long enough to plausibly be.
+  JWT_SECRET: z.string().min(32, "JWT_SECRET must be at least 32 characters"),
+
+  // How long an access token stays valid. Stored as plain seconds (not a
+  // duration string like "15m") so both jsonwebtoken's `sign()` and the
+  // API's own `expiresIn` response field can use the same number directly,
+  // with no duration-parsing library needed.
+  ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(900),
 });
 
 export type Env = z.infer<typeof envSchema>;

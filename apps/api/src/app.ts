@@ -1,12 +1,15 @@
 import express, { type Express } from "express";
 import cors from "cors";
 import helmet from "helmet";
+import { createAuthRoutes } from "./routes/auth.routes.js";
 import type { Env } from "./config/env.js";
 import { notFoundHandler } from "./middleware/not-found.js";
 import { errorHandler } from "./middleware/error-handler.js";
+import type { AuthService } from "./services/auth.service.js";
 
 export interface AppDependencies {
   env: Pick<Env, "CORS_ORIGINS">;
+  authService: AuthService;
 }
 
 /**
@@ -15,7 +18,7 @@ export interface AppDependencies {
  * `createApp` and drive it directly with Supertest, without binding a real
  * port or needing a running process.
  */
-export function createApp({ env }: AppDependencies): Express {
+export function createApp({ env, authService }: AppDependencies): Express {
   const app = express();
 
   // A conservative set of security-related response headers (X-Content-
@@ -46,8 +49,10 @@ export function createApp({ env }: AppDependencies): Express {
     res.status(200).json({ status: "ok" });
   });
 
-  // Feature routes (auth, cities, weather, description, location) are
-  // mounted here starting Stage 2.
+  // POST /api/auth/login is deliberately not behind requireAuth — see
+  // routes/auth.routes.ts. Feature routes (cities, weather, description,
+  // location) that do require it are mounted here starting Stage 4.
+  app.use("/api/auth", createAuthRoutes(authService));
 
   app.use(notFoundHandler);
   app.use(errorHandler);

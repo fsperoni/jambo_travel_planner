@@ -94,7 +94,20 @@ and understand end to end.
 
 ## Why PostgreSQL
 
-_Coming in Stage 2, once the first table exists._
+The travel/weather data itself doesn't need persistence — it's fetched fresh from Open-Meteo
+and Wikipedia on every request. PostgreSQL exists specifically because authentication benefits
+from real persistence (a `users` table, and later `refresh_tokens` if that enhancement lands),
+and because it's the database named in the job description. There's deliberately no `cities`,
+`travel_history`, or `favourites` table — see the `users`-only schema note under
+[Database / migrations](#database-migrations) for why.
+
+`pg` with small, hand-written SQL repositories is used instead of an ORM. At this project's
+size — two tables, at most — an ORM's main value (managing complex relations, generating
+queries across many entities) doesn't apply, and hand-written SQL means every query is
+something I wrote and can explain line by line rather than something an ORM generated. The
+trade-off: no automatic query building or migration-from-model generation; `node-pg-migrate`
+handles schema migrations separately (see below), and each repository method is a plain SQL
+string with parameterized values.
 
 ## Why these external APIs
 
@@ -104,8 +117,8 @@ _Coming in Stages 4–6, alongside the weather/description/geolocation implement
 
 The backend follows a fairly conventional Express layering — `controllers` parse a request and
 call a `service`, which holds the actual business logic and talks to a `repository` (database)
-or a `client` (external API). None of the layers above `middleware`/`errors`/`config` exist yet
-as of Stage 1; this section grows with them.
+or a `client` (external API). `services`/`repositories` arrived in Stage 2 with auth;
+`clients` (the external-API integrations) start in Stage 4.
 
 **`createApp()` vs `server.ts`.** `app.ts` exports a `createApp(deps)` function that builds and
 returns the configured Express app — it never calls `.listen()`. `server.ts` is the only file
@@ -129,6 +142,17 @@ intentional framework change, not a bug I introduced — so instead of mutating 
 three always lands on one `req.valid` property. Controllers read from there; it's a single,
 predictable place regardless of which part of the request a value came from.
 
+**Composition root.** `server.ts` is the one place that wires concrete implementations
+together: a real `pg.Pool` → `UserRepository` → `TokenService` → `AuthService`, then passes
+the finished services into `createApp()`. Nothing below that — services, repositories,
+controllers — imports or constructs its own dependencies; they receive them as plain
+constructor/factory arguments (`createAuthService({ userRepository, tokenService, ... })`).
+This is what makes integration tests possible without a real server: a test builds the same
+chain itself, but pointed at `TEST_DATABASE_URL`, and hands the result straight to
+`createApp()`. There's no DI container — for two or three services, one composition function
+is simpler than a container's registration/resolution machinery, and it's easy to read exactly
+what depends on what by following the constructor calls.
+
 ## Monorepo structure
 
 ```
@@ -137,14 +161,22 @@ jambo-travel-planner/            (repo root)
     api/                         # Express/TypeScript backend
       src/
         app.ts                   # createApp(deps): middleware + routes, no listen()
-        server.ts                # bootstrap: load env, listen, graceful shutdown
+        server.ts                # composition root: wires deps, listens, graceful shutdown
         config/env.ts            # Zod-validated env; fails fast at startup
+        db/pool.ts               # pg.Pool factory
         errors/app-error.ts      # AppError + subclasses
-        middleware/              # validate, error-handler, not-found
-      test/                      # integration tests (Supertest)
+        middleware/              # validate, error-handler, not-found,
+                                  #   require-auth, login-rate-limit
+        routes/, controllers/    # thin HTTP wiring (e.g. auth.routes.ts, auth.controller.ts)
+        services/                # auth, token — business logic, no HTTP or SQL details
+        repositories/            # user.repository.ts — SQL via pg, one file per table
+        domain/                  # pure logic: password hashing, seed-user parsing
+      migrations/                # node-pg-migrate (TypeScript migration files)
+      scripts/seed-users.ts      # thin CLI: parses SEED_USERS, calls the repository
+      test/                      # integration tests (Supertest + a real test database)
     web/                         # React/TypeScript frontend (Vite)
   e2e/                           # Playwright end-to-end tests (Stage 9)
-  .github/workflows/ci.yml       # lint, typecheck, test on every push
+  .github/workflows/ci.yml       # lint, typecheck, migrate, test on every push
   package.json                   # npm workspaces root
 ```
 
@@ -159,19 +191,62 @@ justify the extra package.
 
 ## Authentication
 
-_Coming in Stage 2: a JWT access token in memory, sent as `Authorization: Bearer`, is enough on
-its own to satisfy the assignment. Stage 8 (refresh tokens, an HttpOnly cookie) is a
-conditional enhancement built only once Stages 0–7 are a complete, polished submission on
-their own — see [Trade-offs](#trade-offs) once that section lands._
+**Token storage strategy.** The application uses a short-lived JWT access token stored only in
+application memory and sends it in the `Authorization: Bearer` header for protected API
+requests. This was chosen to directly satisfy the project requirement that API requests use
+Bearer-token authentication while avoiding persistent token storage such as localStorage. (A
+longer-lived opaque refresh token in an HttpOnly cookie, described under
+[Trade-offs](#trade-offs), is a conditional Stage 8 enhancement — not required for the core to
+satisfy the assignment.)
+
+**Login (`POST /api/auth/login`).** `email` + `password` in, an access token + the user out.
+The password is checked with `bcrypt.compare()` against the stored hash. Whether the email
+doesn't exist or the password is wrong, the response is the same generic 401 with the message
+"Invalid email or password" — distinguishing the two would let a client enumerate which emails
+have accounts. When the email doesn't exist, `bcrypt.compare()` still runs (against a
+hardcoded, never-real dummy hash — `domain/password.ts`) rather than short-circuiting, so a
+nonexistent-email attempt takes roughly as long as a wrong-password one; skipping the compare
+would make "no such account" answerable purely by response time.
+
+**The access token itself** is a `jsonwebtoken`-signed HS256 JWT with `sub` (user id), `email`,
+`iat`/`exp`, and pinned `iss`/`aud` claims. `algorithms: ["HS256"]` is pinned explicitly on
+verification — not left to whatever algorithm the token itself claims to use — and
+issuer/audience are re-checked at verify time too, not just at signing. Its lifetime defaults
+to 15 minutes (`ACCESS_TOKEN_TTL_SECONDS`); without a refresh mechanism, 15 minutes would log a
+reviewer out mid-review, so the production deployment may run with a longer TTL if Stage 8
+isn't implemented — documented under [Trade-offs](#trade-offs) once that's decided.
+
+**No self-registration.** Accounts are created by an env-driven seed script
+(`npm run db:seed`, reads `SEED_USERS`) rather than a sign-up flow — out of scope by design,
+see [Known limitations](#known-limitations).
 
 ## Security considerations
 
-In place as of Stage 1: Helmet's baseline security headers on every response, a CORS
+**In place since Stage 1:** Helmet's baseline security headers on every response, a CORS
 allowlist restricting which origins may call the API from a browser at all, a small JSON
 body-size limit, and a central error handler that never sends a stack trace, an internal error
-message, or any other implementation detail to the client — only a stable `code` and a
-client-safe `message`. The rest (JWT/auth-specific concerns, CSRF/XSS implications of the
-token architecture, rate limiting) is expanded starting Stage 2 and through Stage 10.
+message, or any other implementation detail to the client.
+
+**Added in Stage 2:**
+
+- Passwords are hashed with bcrypt (cost factor 10) — never stored or logged in plain text,
+  never returned in any API response.
+- bcrypt only reads a password's first 72 bytes; the login endpoint's Zod schema caps password
+  length so a truncation footgun surfaces as a clear validation error instead of a confusing
+  "it silently ignored part of what I typed." The seed script enforces the same limit, measured
+  in actual UTF-8 bytes rather than character count, at the point where it would actually cause
+  silent truncation.
+- Login is rate-limited (`express-rate-limit`, 10 attempts / 15 minutes per IP) — the only rate
+  limiter in this app. A general API-wide limiter was deliberately left out: the travel
+  endpoints are already behind Bearer auth, and picking an arbitrary global threshold for a
+  take-home adds configuration without a real problem behind it. If asked: _"I rate-limited the
+  security-sensitive authentication endpoint. For a production public API I'd introduce
+  per-user or per-IP limits based on real usage patterns and upstream-provider quotas, rather
+  than picking arbitrary limits here."_ This limiter's accuracy depends on `req.ip` reflecting
+  the real client, which in turn depends on Express's `trust proxy` matching the actual
+  deployment — verified in the deployment stage (Stage 3.5/6), not guessed at now.
+- CSRF/XSS implications of the token architecture, and the cookie-specific concerns that come
+  with Stage 8, are covered once that stage lands.
 
 ## IP-based geolocation
 
@@ -183,17 +258,30 @@ _Coming in Stage 7._
 
 ## API overview
 
-| Method & path | Auth | Purpose                                                            |
-| ------------- | ---- | ------------------------------------------------------------------ |
-| `GET /health` | none | `{ "status": "ok" }` — used by the hosting platform's health check |
+| Method & path          | Auth               | Purpose                                                                                          |
+| ---------------------- | ------------------ | ------------------------------------------------------------------------------------------------ |
+| `GET /health`          | none               | `{ "status": "ok" }` — used by the hosting platform's health check                               |
+| `POST /api/auth/login` | none, rate-limited | `{email,password}` → `200 {accessToken, expiresIn, user}`; 400 bad body; 401 invalid credentials |
 
-More endpoints land starting Stage 2. Every error response uses the same envelope:
+More endpoints land starting Stage 4 (all behind `requireAuth`, i.e. a valid `Authorization:
+Bearer` header). Every error response uses the same envelope:
 `{ "error": { "code": "SOME_CODE", "message": "...", "details"?: [...] } }`.
 
 ## Local setup
 
 ```bash
 npm install               # installs both apps' dependencies (npm workspaces)
+
+# One-time local database setup (any PostgreSQL 16+ works):
+createdb jambo_dev
+createdb jambo_test
+DATABASE_URL=postgres://localhost/jambo_dev npm run db:migrate -w @jambo/api
+TEST_DATABASE_URL=postgres://localhost/jambo_test npm run db:migrate:test -w @jambo/api
+
+# Seed a local user (SEED_USERS format: "email1:password1,email2:password2"):
+DATABASE_URL=postgres://localhost/jambo_dev SEED_USERS="demo@example.com:demopassword" \
+  npm run db:seed -w @jambo/api
+
 npm run lint
 npm run typecheck
 npm test
@@ -202,29 +290,62 @@ cd apps/api
 npm run dev                # starts the API on http://localhost:3000
 ```
 
-Requires Node.js 24+ (see `.nvmrc`). No database or `.env` file is required yet — the API only
-needs env vars from Stage 2 onward.
+Requires Node.js 24+ (see `.nvmrc`). `npm run dev` and `npm run db:seed` both pick up a local
+`.env` file automatically if one exists (`--env-file-if-exists`); it's entirely optional — the
+commands above work with env vars passed inline instead, which is what CI does.
 
 ## Environment variables
 
 All backend env vars are validated at startup (`apps/api/src/config/env.ts`); the process
 refuses to start if one is missing or malformed, with a message naming the offending variable.
 
-| Variable       | Required | Default                 | Purpose                                                                                                     |
-| -------------- | -------- | ----------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `NODE_ENV`     | no       | `development`           | `development` \| `test` \| `production`                                                                     |
-| `PORT`         | no       | `3000`                  | HTTP port the API listens on                                                                                |
-| `CORS_ORIGINS` | no       | `http://localhost:5173` | Comma-separated list of origins allowed to call the API from a browser (the Vite dev server's default port) |
+| Variable                   | Required | Default                 | Purpose                                                                |
+| -------------------------- | -------- | ----------------------- | ---------------------------------------------------------------------- |
+| `NODE_ENV`                 | no       | `development`           | `development` \| `test` \| `production`                                |
+| `PORT`                     | no       | `3000`                  | HTTP port the API listens on                                           |
+| `CORS_ORIGINS`             | no       | `http://localhost:5173` | Comma-separated list of origins allowed to call the API from a browser |
+| `DATABASE_URL`             | **yes**  | —                       | PostgreSQL connection string, e.g. `postgres://user:pass@host:5432/db` |
+| `JWT_SECRET`               | **yes**  | —                       | HS256 signing secret for access tokens; at least 32 characters         |
+| `ACCESS_TOKEN_TTL_SECONDS` | no       | `900` (15 min)          | How long an access token stays valid, in seconds                       |
 
-More variables (`DATABASE_URL`, `JWT_SECRET`, `ACCESS_TOKEN_TTL`, `TRUST_PROXY_HOPS`,
-`DEFAULT_CITY_ID`, provider base URLs) are added as the stages that need them land — see the
-table grow here rather than all at once.
+Not validated by `config/env.ts` (read directly by their respective one-off scripts, not by the
+running server): `TEST_DATABASE_URL` (integration tests and `db:migrate:test`), `SEED_USERS`
+(`db:seed` — format `"email1:password1,email2:password2"`, see
+[Authentication](#authentication)).
+
+More variables (`TRUST_PROXY_HOPS`, `DEFAULT_CITY_ID`, provider base URLs) are added as the
+stages that need them land.
 
 ## Database / migrations
 
 Local development requires PostgreSQL 16+ (any install — Postgres.app, Homebrew, a system
 package, or a Neon development branch all work) reachable via `DATABASE_URL`. Docker is not
-required. Details land in Stage 2 once the first migration exists.
+required.
+
+Schema migrations use [node-pg-migrate](https://github.com/salsita/node-pg-migrate), written
+in TypeScript (`apps/api/migrations/*.ts`), run via `npm run db:migrate -w @jambo/api` (reads
+`DATABASE_URL`) or `npm run db:migrate:test -w @jambo/api` (reads `TEST_DATABASE_URL` instead —
+same migrations, different target database). `npm run db:migrate:create -w @jambo/api -- <name>`
+scaffolds a new one.
+
+**Schema, as of Stage 2:**
+
+```sql
+users
+  id             uuid PRIMARY KEY DEFAULT gen_random_uuid()
+  email          text NOT NULL UNIQUE CHECK (email = lower(email))
+  password_hash  text NOT NULL
+  created_at     timestamptz NOT NULL DEFAULT now()
+  updated_at     timestamptz NOT NULL DEFAULT now()
+```
+
+That's the only table. There's deliberately no `cities` table (the catalogue is a small,
+static, read-only list — see [Why these external APIs](#why-these-external-apis) once Stage 4
+lands), and no travel-history or favourites tables (out of scope — see
+[Known limitations](#known-limitations)). `gen_random_uuid()` needs no extension on PostgreSQL
+13+, and the `CHECK` constraint enforces the email-is-already-lowercase invariant the
+application code relies on for case-insensitive lookups, rather than trusting every write path
+to remember to normalize it.
 
 ## Running tests
 
@@ -233,21 +354,37 @@ npm test              # unit + integration tests, both workspaces
 npm run test:coverage # same, with a coverage report
 ```
 
-Backend integration tests additionally require `TEST_DATABASE_URL` (Stage 2 onward). The
-Playwright end-to-end test (`npm run e2e`, Stage 9) is separate from `npm test`.
+Backend integration tests require `TEST_DATABASE_URL`, pointed at a database with migrations
+already applied (`npm run db:migrate:test -w @jambo/api`) — see
+[Local setup](#local-setup). Without it, the integration test suite fails immediately with a
+message saying so, rather than a confusing connection error. CI provisions a PostgreSQL
+service container and runs the migration automatically before tests. The Playwright end-to-end
+test (`npm run e2e`, Stage 9) is separate from `npm test`.
 
 ## Testing strategy
 
-As of Stage 1: unit tests live next to the file they test (`src/**/*.test.ts`) and cover
-logic that can actually be wrong — env parsing/defaults, the validation middleware, and the
-central error handler's mapping from a thrown error to an HTTP response (including that a
-generic message reaches the client while the real error is only logged server-side).
-Integration tests live under `apps/api/test/` and exercise the whole wired-up app over real
-HTTP with Supertest, rather than one function at a time — currently just `/health` and the
-404 fallback. Coverage (`npm run test:coverage`) is scoped to directories with real logic
-(`config`, `errors`, `middleware`, and `services`/`domain`/`clients` once they exist), not
-boilerplate like route wiring — there's no 100% target. Expanded through Stage 9; see the
-project's testing matrix for the full requirement-to-test mapping.
+**Unit tests** live next to the file they test (`src/**/*.test.ts`) and cover logic that can
+actually be wrong: env parsing/defaults, the validation middleware, the central error
+handler's mapping from a thrown error to an HTTP response, JWT signing/verification (expired
+tokens, wrong secret, wrong algorithm, wrong issuer/audience — all deliberately tested, not
+just the happy path), the `requireAuth` middleware in isolation (mocked `TokenService`), the
+auth service's login logic (mocked repository — including a test that the timing-safety dummy
+bcrypt compare actually runs on an unknown email, not just that it _would_ if someone
+remembered to call it), and the `SEED_USERS` parser (including the UTF-8-bytes-not-characters
+edge case for the 72-byte bcrypt limit).
+
+**Integration tests** live under `apps/api/test/` and exercise the whole wired-up app over
+real HTTP with Supertest, against a real PostgreSQL database rather than a mock — a mock
+can't catch a mismatch between a migration's columns and a repository's SQL the way an actual
+query does. `POST /api/auth/login` is covered for valid credentials, an unknown email, a wrong
+password, and a malformed body; there's also a test confirming the token login issues actually
+verifies through the same `TokenService` a protected route will use starting Stage 4, since
+Stage 2 doesn't have a protected route of its own to test end-to-end yet.
+
+Coverage (`npm run test:coverage`) is scoped to directories with real logic (`config`,
+`errors`, `middleware`, `services`, `domain`) rather than boilerplate like route wiring —
+there's no 100% target. Expanded through Stage 9; see the project's testing matrix for the
+full requirement-to-test mapping.
 
 ## Deployment architecture
 

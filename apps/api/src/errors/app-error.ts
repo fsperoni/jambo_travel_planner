@@ -29,3 +29,9 @@ export class ValidationError extends AppError {
     super(400, "VALIDATION_ERROR", message, details);
   }
 }
+
+export class UnauthorizedError extends AppError {
+  constructor(message = "Unauthorized") {
+    super(401, "UNAUTHORIZED", message);
+  }
+}

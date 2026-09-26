@@ -16,6 +16,11 @@ declare global {
         query?: unknown;
         params?: unknown;
       };
+      /** Set by middleware/require-auth.ts once the Bearer token verifies. */
+      user?: {
+        sub: string;
+        email: string;
+      };
     }
   }
 }

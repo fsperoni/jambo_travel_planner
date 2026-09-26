@@ -160,3 +160,72 @@ the Bearer header the frontend attaches doesn't need it, and shipping it before 
 cookie that needs it is exactly the kind of thing I couldn't have defended if asked "why is
 this here?" in the walkthrough. Updated the matching comments in `env.ts` and a few README
 sentences that referenced the old assumption.
+
+## 2026-09-25 - Stage 2: auth core
+
+**Tool:** Claude Code.
+
+Built the `users` migration, the user repository, bcrypt password hashing, the JWT token
+service, the login-only rate limiter, `requireAuth`, and `POST /api/auth/login` end to end.
+
+**Verified against a real database, not just typechecked.** Before writing any application
+code against it, Claude Code actually ran the migration against a local PostgreSQL 17
+instance: applied it, inserted a row with an uppercase email to confirm the
+`users_email_lowercase_check` constraint genuinely rejects it (not just that the SQL looks
+right), then ran the migration back down and confirmed the table was gone. Same standard
+applied to the finished login endpoint - a real server, started with `tsx`, seeded with a real
+user via the seed script, then hit with `curl` for the valid-login, wrong-password,
+unknown-email, and malformed-body cases, plus twelve rapid login attempts in a row to confirm
+the rate limiter actually returns 429 rather than just trusting that `express-rate-limit` was
+configured correctly.
+
+**A real tool gotcha, found by testing rather than assumed:** `node-pg-migrate`'s `--envPath`
+flag (for loading a `.env` file) silently does nothing unless the `dotenv` package happens to
+be installed - it's an optional peer the CLI soft-imports, and with no `dotenv` dependency in
+this project (deliberately - the app itself uses Node's built-in `--env-file` instead), passing
+`--envPath` just failed to set `DATABASE_URL` with no error at all. Caught by actually running
+the migration command, not by reading the tool's `--help` output. Rather than add a dependency
+just to unlock that flag, the migration scripts stick to the pattern node-pg-migrate's own
+README documents as the primary way to use it: `DATABASE_URL=... npm run db:migrate`, with
+`TEST_DATABASE_URL` handled via node-pg-migrate's own `-d` flag
+(`db:migrate:test`: `node-pg-migrate up -d TEST_DATABASE_URL`) instead of a second script that
+duplicates the first.
+
+**What I changed:** an early draft of the auth-service tests used
+`.rejects.toMatchObject({ constructor: UnauthorizedError, message: "..." })` to check both the
+error type and its message in one assertion. That's not actually a reliable way to check
+`instanceof` with `toMatchObject` (`constructor` isn't a normal own-enumerable property, so
+the check doesn't verify what it looks like it verifies) - caught it before it shipped and
+replaced it with two unambiguous assertions (`toBeInstanceOf` + `toThrow`) on the same promise
+reference instead.
+
+**A scope call, not a bug:** there's no protected route yet to write a true
+"valid Bearer token → 200" integration test against — the first one (`/api/cities`) doesn't
+land until Stage 4. Rather than invent a placeholder endpoint just to have something to test,
+`requireAuth` gets full unit coverage in isolation (missing header, wrong scheme, invalid/
+expired token, valid token) now, and the login integration test adds one more check: that the
+token it issues actually verifies through the same `TokenService` a protected route will use.
+The true end-to-end version lands with Stage 4, documented as such in the README rather than
+left implicit.
+
+**Also caught in review:** bcrypt's 72-byte password limit is a _byte_ limit, not a character
+one - a naive `.length` check would pass a 40-character password made of "é" (2 bytes each in
+UTF-8, 80 bytes total) straight through to silent truncation. The seed-user parser measures
+with `Buffer.byteLength(password, "utf8")`, and there's a dedicated test using exactly that
+multi-byte case rather than only testing with plain ASCII, where the character-vs-byte
+distinction wouldn't show up at all.
+
+**Caught by Fabio before committing:** `user.repository.ts` originally had a `UserRow`
+interface plus a `mapRow()` function whose entire job was renaming pg's snake_case columns
+(`password_hash`, `created_at`, `updated_at`) to the app's camelCase `User` type - noticed
+while reviewing the diff that the function "only renames attributes" and asked whether it was
+actually earning its place. It wasn't: PostgreSQL column aliases (`password_hash AS
+"passwordHash"`) do the same renaming directly in the query, so `pool.query<User>(...)`
+returns already-shaped rows with no separate mapping step. Removed `UserRow` and `mapRow`
+entirely (~19 lines) and pulled the alias list into one shared `USER_COLUMNS` constant so the
+`SELECT` and `INSERT ... RETURNING` queries can't drift out of sync with each other. The one
+real trade-off, stated rather than hidden: a typo'd mapper field would have been a TypeScript
+compile error, while a missing double-quote on a SQL alias (Postgres silently lowercases an
+unquoted one) is only caught by the integration tests actually checking response shape - an
+acceptable trade for a file with two queries, reverified by re-running the real integration
+tests against PostgreSQL afterward rather than trusting the typecheck alone.
