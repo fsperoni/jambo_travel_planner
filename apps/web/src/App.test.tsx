@@ -1,12 +1,30 @@
+import { screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
-import { render, screen } from "@testing-library/react";
 import { App } from "./App";
+import { renderWithProviders } from "./test/render-with-providers";
+import { VALID_CREDENTIALS } from "./test/msw/handlers";
 
-// Scaffold-stage smoke test: proves the Vite + Vitest + React Testing Library
-// pipeline works end to end. Replaced once the real app shell lands in Stage 3.
+// An integration-style test of the whole auth wiring: AuthProvider,
+// http.ts, LoginPage, and App's own "which view to show" logic, exercised
+// together through a real (MSW-mocked) login rather than by asserting on
+// AuthProvider's internal state directly. The individual pieces have their
+// own focused unit tests elsewhere (AuthProvider.test.tsx, LoginPage.test.tsx,
+// http.test.ts).
 describe("App", () => {
-  it("renders the scaffold placeholder", () => {
-    render(<App />);
-    expect(screen.getByRole("heading", { name: "Jambo Travel Planner" })).toBeInTheDocument();
+  it("shows the login page first, then the authenticated view after signing in", async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<App />);
+
+    expect(screen.getByRole("form", { name: "Sign in" })).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("Email"), VALID_CREDENTIALS.email);
+    await user.type(screen.getByLabelText("Password"), VALID_CREDENTIALS.password);
+    await user.click(screen.getByRole("button", { name: "Sign in" }));
+
+    await waitFor(() => {
+      expect(screen.getByText(VALID_CREDENTIALS.email)).toBeInTheDocument();
+    });
+    expect(screen.queryByRole("form", { name: "Sign in" })).not.toBeInTheDocument();
   });
 });

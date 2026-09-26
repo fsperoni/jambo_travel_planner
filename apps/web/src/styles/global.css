@@ -1,13 +1,32 @@
-/* Design tokens and global resets are added in Stage 3, alongside the app shell. */
+@import "./tokens.css";
+
+/* A minimal reset — just enough to stop each browser's own UA stylesheet
+   from causing inconsistent spacing/sizing, not a full CSS-reset library. */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
 :root {
   color-scheme: light dark;
 }
 
 body {
   margin: 0;
-  font-family:
-    system-ui,
-    -apple-system,
-    "Segoe UI",
-    sans-serif;
+  min-height: 100vh;
+  font-family: var(--font-sans);
+  background: var(--color-bg);
+  color: var(--color-text);
 }
+
+button,
+input {
+  font: inherit;
+  color: inherit;
+}
+
+/* Buttons keep the browser's default focus ring — accessible keyboard
+   navigation matters more here than a custom focus style, and removing the
+   outline without a deliberate replacement is a common accessibility bug
+   this project isn't going to reintroduce for the sake of appearance. */

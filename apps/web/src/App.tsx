@@ -1,10 +1,23 @@
-// Scaffold placeholder. The real app shell (AuthProvider, LoginPage,
-// TravelPlannerPage) is built starting Stage 3 ("Web/auth foundation").
+import { useAuth } from "./auth/AuthContext";
+import { LoginPage } from "./auth/LoginPage";
+import { AppHeader } from "./components/AppHeader";
+
 export function App() {
+  const { isAuthenticated } = useAuth();
+
+  if (!isAuthenticated) {
+    return <LoginPage />;
+  }
+
   return (
-    <main>
-      <h1>Jambo Travel Planner</h1>
-      <p>Scaffold ready.</p>
-    </main>
+    <>
+      <AppHeader />
+      {/* The travel planner itself (city selector, weather, description)
+          starts in Stage 4 — this is just enough to prove the authenticated
+          view actually renders once login succeeds. */}
+      <main>
+        <p>You&rsquo;re signed in. The travel planner starts in Stage 4.</p>
+      </main>
+    </>
   );
 }

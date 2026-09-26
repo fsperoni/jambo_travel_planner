@@ -229,3 +229,73 @@ compile error, while a missing double-quote on a SQL alias (Postgres silently lo
 unquoted one) is only caught by the integration tests actually checking response shape - an
 acceptable trade for a file with two queries, reverified by re-running the real integration
 tests against PostgreSQL afterward rather than trusting the typecheck alone.
+
+**Also caught by Fabio, on a different file:** asked directly whether `token.service.ts`'s
+`ISSUER`/`AUDIENCE` constants were safe to commit, since they're sitting right in source next
+to a security-sensitive file. Worked through it rather than just asserting an answer: wrote a
+two-line repro that signs a token with the _wrong_ secret but the _correct_ issuer/audience and
+confirmed `jwt.verify()` still rejects it (`invalid signature`) before it ever gets to checking
+those claims. `iss`/`aud` are labels compared after the signature already passed, not part of
+the cryptographic check itself - closer to a realm name than a credential. `JWT_SECRET`, the
+thing that would actually matter if it leaked, was already correctly kept out of source (env
+var, validated to be ≥32 characters at startup, gitignored `.env` locally).
+
+## 2026-09-25 - Stage 3: web/auth foundation
+
+**Tool:** Claude Code.
+
+Built the frontend half of authentication: design tokens (`styles/tokens.css`), the
+`api/http.ts` fetch wrapper (attaches `Authorization: Bearer`, distinguishes a 401 from an
+authenticated request — session expired — from a 401 from the login endpoint itself — wrong
+credentials), `AuthProvider`/`useAuth` (token in a `ref`, user in state, a `configureAuthHandlers`
+registration to bridge `http.ts` and `AuthProvider` without a circular import), `LoginPage`
+(with a `useDelayedFlag`-driven "the server may be waking up" notice for Render's free-tier
+cold starts), and the `App.tsx` shell that swaps between them.
+
+**A real gotcha, caught by actually running the suite, not by assuming it would pass:** the
+first draft of `AuthProvider.test.tsx` and `LoginPage.test.tsx` failed everywhere _except each
+file's first test_ - the DOM dump in the failure showed two copies of the same form stacked on
+top of each other. React Testing Library normally deregisters (`cleanup()`) the previous
+test's render automatically, but only by detecting a _global_ `afterEach` function - this
+project deliberately never turned on Vitest's `globals: true` (explicit imports over magic
+globals, the same call made back in Stage 0's ESLint setup), so that auto-detection silently
+never fired, and every `render()` call within a file just kept adding to `document.body`.
+Confirmed the actual mechanism by reading `@testing-library/react`'s own source
+(`typeof afterEach === 'function'`) rather than guessing, then fixed it at the root: one
+explicit `afterEach(() => cleanup())` in the shared test setup file, which is the direct,
+correct consequence of the globals choice rather than a workaround for a bug in the library.
+
+**What I changed after linting flagged it:** `AuthProvider.tsx` originally exported both the
+`AuthProvider` component and the `useAuth` hook from one file - `react-refresh/only-export-components`
+warned that this downgrades Vite's Fast Refresh to a full page reload for that file, since Fast
+Refresh only hot-reloads files that exclusively export components. Rather than suppress the
+warning (this project has generally fixed lint warnings at the root elsewhere, not silenced
+them), split `useAuth` and the context object into their own file (`AuthContext.ts`), leaving
+`AuthProvider.tsx` exporting only the component. Had to update every file importing `useAuth`
+from the old location, including a test's `vi.mock(...)` target, which needs to match the exact
+module path the component under test actually imports from - a mismatch there wouldn't error,
+it would just silently mock nothing and let the real `useAuth` run instead.
+
+**Verified beyond the test suite:** ran the real API server (from Stage 2, with the demo user
+seeded then) and the real Vite dev server side by side, then used `curl` to send an actual CORS
+preflight and a real login request with `Origin: http://localhost:5173` set - confirming the
+frontend's default API URL and the backend's default CORS allowlist actually work together for
+a real browser, not just inside MSW's mocked network layer, which never touches real CORS at
+all.
+
+**Correction requested by Fabio, after manual device testing:** on a 360px-wide viewport
+(Chrome DevTools, Samsung Galaxy S8+ emulation), `AppHeader` looked broken - the title text
+"Jambo Travel Planner" wrapped mid-phrase onto two lines while the email and logout button got
+squeezed onto the same crowded row, caught by Fabio actually opening the app on a narrow
+viewport and screenshotting it, not by anything in the test suite. This is a real gap in
+automated coverage: jsdom (what the test suite runs against) doesn't perform real CSS
+layout/flexbox computation, so no test written against it could have caught a wrapping bug at a
+specific viewport width - this class of issue only surfaces by actually rendering the page.
+Fixed `AppHeader.module.css`: `white-space: nowrap` keeps the title itself from wrapping
+internally, and `flex-wrap` on the header lets the email+button block drop to its own row below
+the title when there isn't room, instead of both fighting for space on one row. Also added
+`text-overflow: ellipsis` truncation on the email while making the fix, since a real user's
+email could be considerably longer than `demo@example.com` and would hit the same kind of
+overflow the title did. Verified against the existing test suite (24 tests, still passing - none
+of them exercise this layout, consistent with the point above) and confirmed visually by Fabio
+re-checking the same device emulation afterward.

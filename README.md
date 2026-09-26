@@ -58,7 +58,8 @@ for city descriptions, [ipapi.co](https://ipapi.co) for IP geolocation.
 
 **Testing:** [Vitest](https://vitest.dev) (backend unit tests), [Supertest](https://github.com/ladjs/supertest)
 against a real PostgreSQL instance (integration tests), [React Testing Library](https://testing-library.com/react)
-(frontend behaviour), one [Playwright](https://playwright.dev) end-to-end happy path.
+with [MSW](https://mswjs.io) (frontend behaviour), one [Playwright](https://playwright.dev)
+end-to-end happy path.
 
 **Delivery:** an npm-workspaces monorepo, GitHub Actions for CI (lint, typecheck, test on
 every push), Vercel (frontend), Render (backend), Neon (PostgreSQL).
@@ -153,6 +154,24 @@ chain itself, but pointed at `TEST_DATABASE_URL`, and hands the result straight 
 is simpler than a container's registration/resolution machinery, and it's easy to read exactly
 what depends on what by following the constructor calls.
 
+**Frontend.** `AuthProvider` (`auth/AuthProvider.tsx`) holds the logged-in user in React state
+and the access token in a `ref` — deliberately not just state. `api/http.ts`'s fetch wrapper
+needs the _current_ token on every call, from a plain function, not the value a particular
+render's closure happened to capture; a `ref` gives it that without re-registering anything on
+every login. `AuthContext`/`useAuth` live in their own file (`auth/AuthContext.ts`), split out
+from the `AuthProvider` component itself, purely so that component file only exports a
+component — Vite's Fast Refresh only hot-reloads files that exclusively export components, and
+a mixed export would silently downgrade every edit to `AuthProvider.tsx` to a full page reload.
+
+`http.ts` and `AuthProvider` can't import each other directly without a circular module graph
+(`AuthProvider` → `auth.api.ts` → `http.ts` → would need `AuthProvider` back to read the
+token). Instead, `AuthProvider` calls `configureAuthHandlers({ getAccessToken, onUnauthorized })`
+once on mount — a small, explicit registration, not a state-management library brought in to
+solve one wiring problem. `getAccessToken` is how `http.ts` attaches the Bearer header;
+`onUnauthorized` fires when a request _that had a token attached_ comes back 401, clearing the
+session and flagging it as expired. A 401 with _no_ token attached (a wrong-password login
+attempt) is deliberately not treated as a session expiry — see [Authentication](#authentication).
+
 ## Monorepo structure
 
 ```
@@ -175,6 +194,13 @@ jambo-travel-planner/            (repo root)
       scripts/seed-users.ts      # thin CLI: parses SEED_USERS, calls the repository
       test/                      # integration tests (Supertest + a real test database)
     web/                         # React/TypeScript frontend (Vite)
+      src/
+        api/                     # http.ts (Bearer + 401 handling), auth.api.ts, types.ts
+        auth/                    # AuthContext, AuthProvider, LoginPage
+        components/              # AppHeader (shared shell UI)
+        lib/                     # useDelayedFlag (small, reusable, unit-tested hooks)
+        styles/                  # tokens.css (design tokens), global.css
+        test/                    # MSW request-mock handlers + a render-with-providers helper
   e2e/                           # Playwright end-to-end tests (Stage 9)
   .github/workflows/ci.yml       # lint, typecheck, migrate, test on every push
   package.json                   # npm workspaces root
@@ -219,6 +245,22 @@ isn't implemented — documented under [Trade-offs](#trade-offs) once that's dec
 **No self-registration.** Accounts are created by an env-driven seed script
 (`npm run db:seed`, reads `SEED_USERS`) rather than a sign-up flow — out of scope by design,
 see [Known limitations](#known-limitations).
+
+**Frontend, as of Stage 3.** `LoginPage` calls `AuthProvider`'s `login()`, which calls the
+backend and, on success, stores the access token in memory (see
+[Architecture overview](#architecture-overview) for exactly how) and the user in React state —
+never in `localStorage` or a cookie the frontend controls. Every subsequent request through
+`api/http.ts` attaches `Authorization: Bearer <token>` automatically. If a request comes back
+401 _with_ a token attached, the session is cleared and the user is returned to the login
+screen with "Your session expired. Please sign in again." A 401 from the login endpoint itself
+(wrong credentials) is shown as a form error instead — it isn't a session expiring, since there
+was never a session to begin with. Logging out is purely client-side in the core (there's no
+`/api/auth/logout` yet — see [Trade-offs](#trade-offs)): it just clears the in-memory token and
+user.
+
+**Reload behaviour, honestly stated:** since the token lives only in memory, refreshing the
+page logs the user out — there is no session to restore from. This is the direct, accepted
+consequence of not using `localStorage` and not yet having a refresh-token cookie (Stage 8).
 
 ## Security considerations
 
@@ -279,7 +321,7 @@ DATABASE_URL=postgres://localhost/jambo_dev npm run db:migrate -w @jambo/api
 TEST_DATABASE_URL=postgres://localhost/jambo_test npm run db:migrate:test -w @jambo/api
 
 # Seed a local user (SEED_USERS format: "email1:password1,email2:password2"):
-DATABASE_URL=postgres://localhost/jambo_dev SEED_USERS="demo@example.com:demopassword" \
+DATABASE_URL=postgres://localhost/jambo_dev SEED_USERS="demo@example.com:demopassword123" \
   npm run db:seed -w @jambo/api
 
 npm run lint
@@ -290,14 +332,26 @@ cd apps/api
 npm run dev                # starts the API on http://localhost:3000
 ```
 
+In a second terminal:
+
+```bash
+cd apps/web
+npm run dev                # starts the frontend on http://localhost:5173
+```
+
+Open `http://localhost:5173` and sign in with whatever account you seeded above. No frontend
+`.env` is needed for local dev — the frontend's default API URL (`http://localhost:3000`) and
+the backend's default CORS allowlist (`http://localhost:5173`) already match each other out of
+the box.
+
 Requires Node.js 24+ (see `.nvmrc`). `npm run dev` and `npm run db:seed` both pick up a local
 `.env` file automatically if one exists (`--env-file-if-exists`); it's entirely optional — the
 commands above work with env vars passed inline instead, which is what CI does.
 
 ## Environment variables
 
-All backend env vars are validated at startup (`apps/api/src/config/env.ts`); the process
-refuses to start if one is missing or malformed, with a message naming the offending variable.
+**Backend** — validated at startup (`apps/api/src/config/env.ts`); the process refuses to
+start if one is missing or malformed, with a message naming the offending variable.
 
 | Variable                   | Required | Default                 | Purpose                                                                |
 | -------------------------- | -------- | ----------------------- | ---------------------------------------------------------------------- |
@@ -313,8 +367,20 @@ running server): `TEST_DATABASE_URL` (integration tests and `db:migrate:test`), 
 (`db:seed` — format `"email1:password1,email2:password2"`, see
 [Authentication](#authentication)).
 
-More variables (`TRUST_PROXY_HOPS`, `DEFAULT_CITY_ID`, provider base URLs) are added as the
-stages that need them land.
+More backend variables (`TRUST_PROXY_HOPS`, `DEFAULT_CITY_ID`, provider base URLs) are added
+as the stages that need them land.
+
+**Frontend** — read by Vite at build time (`import.meta.env.VITE_*`). There's no startup
+validation step the way the backend has one — a static site has no "startup" to fail at — so
+this is documented here instead.
+
+| Variable            | Required | Default                 | Purpose                                     |
+| ------------------- | -------- | ----------------------- | ------------------------------------------- |
+| `VITE_API_BASE_URL` | no       | `http://localhost:3000` | Base URL the frontend sends API requests to |
+
+The default matches the backend's own default `PORT`, so local development needs no frontend
+`.env` at all. Production sets this to the deployed API's real URL (a Vercel project setting,
+configured during the deployment stage).
 
 ## Database / migrations
 
@@ -385,6 +451,19 @@ Coverage (`npm run test:coverage`) is scoped to directories with real logic (`co
 `errors`, `middleware`, `services`, `domain`) rather than boilerplate like route wiring —
 there's no 100% target. Expanded through Stage 9; see the project's testing matrix for the
 full requirement-to-test mapping.
+
+**Frontend tests**, as of Stage 3, use React Testing Library and [MSW](https://mswjs.io) to
+intercept `fetch` at the network level rather than mocking `fetch` itself or the API-client
+functions — a request that doesn't match a configured handler fails the test loudly
+(`onUnhandledRequest: "error"`), instead of silently hitting the real network. Tests fall into
+three levels: a pure-logic unit test with no rendering at all (`useDelayedFlag`, using fake
+timers rather than waiting on real ones); component tests with `useAuth()` mocked directly, so
+`LoginPage`'s own rendering logic (form, pending state, error display) is tested in isolation
+from `AuthProvider`; and one integration-style test (`App.test.tsx`) that renders real
+components through a real `AuthProvider`, types into real inputs, and drives an MSW-mocked
+login end to end to confirm the login screen actually gets swapped for the authenticated view —
+the level at which "does the wiring between AuthProvider, http.ts, and LoginPage actually work"
+gets tested, rather than asserted piecewise across separate unit tests.
 
 ## Deployment architecture
 

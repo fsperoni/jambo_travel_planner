@@ -1,0 +1,45 @@
+/*
+ * Design tokens: a small, fixed set of values reused across components via
+ * CSS custom properties, instead of a component library. Kept deliberately
+ * short — a handful of colors, one spacing scale, one radius, one shadow —
+ * rather than a full design-system token set this project doesn't need.
+ */
+:root {
+  /* Colors */
+  --color-primary: #2563eb;
+  --color-primary-hover: #1d4ed8;
+  --color-bg: #f8fafc;
+  --color-surface: #ffffff;
+  --color-text: #0f172a;
+  --color-text-muted: #64748b;
+  --color-border: #e2e8f0;
+  --color-error: #dc2626;
+  --color-error-bg: #fef2f2;
+  --color-notice: #b45309;
+  --color-notice-bg: #fffbeb;
+
+  /* Spacing scale (used for padding/gaps/margins throughout) */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+
+  --radius: 0.5rem;
+  --shadow-card: 0 1px 3px rgb(0 0 0 / 0.1), 0 1px 2px rgb(0 0 0 / 0.06);
+
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-bg: #0f172a;
+    --color-surface: #1e293b;
+    --color-text: #f1f5f9;
+    --color-text-muted: #94a3b8;
+    --color-border: #334155;
+    --color-error-bg: #3f1414;
+    --color-notice-bg: #3f2d0a;
+  }
+}
