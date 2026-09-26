@@ -1,4 +1,5 @@
 import type { AuthService } from "../../src/services/auth.service.js";
+import type { WeatherService } from "../../src/services/weather.service.js";
 
 /**
  * An AuthService stub for tests (like the /health and 404 tests) that need
@@ -11,6 +12,17 @@ export function createFakeAuthService(overrides: Partial<AuthService> = {}): Aut
   return {
     login: () => {
       throw new Error("createFakeAuthService: login() was not stubbed for this test");
+    },
+    ...overrides,
+  };
+}
+
+/** Same idea as createFakeAuthService, for tests that need createApp()'s
+ *  dependencies satisfied but don't exercise /api/weather. */
+export function createFakeWeatherService(overrides: Partial<WeatherService> = {}): WeatherService {
+  return {
+    getWeatherReport: () => {
+      throw new Error("createFakeWeatherService: getWeatherReport() was not stubbed for this test");
     },
     ...overrides,
   };

@@ -112,14 +112,29 @@ string with parameterized values.
 
 ## Why these external APIs
 
-_Coming in Stages 4–6, alongside the weather/description/geolocation implementations._
+**Weather: [Open-Meteo](https://open-meteo.com).** Free, no API key, and its `timezone=auto`
+parameter resolves the correct IANA time zone directly from coordinates — which is what makes
+the city-local "today" used throughout this app possible without any date-math of our own; see
+[Timezone / date handling](#timezone-date-handling). The alternative considered was
+OpenWeatherMap, which needs a key and doesn't offer that same automatic-timezone behaviour.
+
+City description (Stage 5) and IP geolocation (Stage 6) land with their own implementations.
 
 ## Architecture overview
 
 The backend follows a fairly conventional Express layering — `controllers` parse a request and
 call a `service`, which holds the actual business logic and talks to a `repository` (database)
 or a `client` (external API). `services`/`repositories` arrived in Stage 2 with auth;
-`clients` (the external-API integrations) start in Stage 4.
+`clients` (external-API integrations — currently just Open-Meteo) arrived in Stage 4.
+
+**Clients never leak vendor shapes.** `clients/open-meteo/raw-types.ts` declares exactly the
+fields Open-Meteo's response actually has (confirmed against a real response, not written from
+documentation alone) — snake_case, a 0/1 `is_day`, five parallel `daily` arrays. Nothing outside
+`clients/open-meteo/` ever sees that shape: `mapper.ts` converts it to this app's own
+`WeatherReport` type (camelCase, `isDay` as a real boolean, one array of day objects instead of
+five parallel arrays), and `client.ts` calls that mapper internally before returning — so even
+`weather.service.ts`, one layer up, only ever works with our own normalized type. If a second
+weather provider were ever added, only this one directory would need to change.
 
 **`createApp()` vs `server.ts`.** `app.ts` exports a `createApp(deps)` function that builds and
 returns the configured Express app — it never calls `.listen()`. `server.ts` is the only file
@@ -186,19 +201,25 @@ jambo-travel-planner/            (repo root)
         errors/app-error.ts      # AppError + subclasses
         middleware/              # validate, error-handler, not-found,
                                   #   require-auth, login-rate-limit
-        routes/, controllers/    # thin HTTP wiring (e.g. auth.routes.ts, auth.controller.ts)
-        services/                # auth, token — business logic, no HTTP or SQL details
+        routes/, controllers/    # thin HTTP wiring (e.g. travel.routes.ts, travel.controller.ts)
+        services/                # auth, token, weather — business logic, no HTTP or SQL details
         repositories/            # user.repository.ts — SQL via pg, one file per table
-        domain/                  # pure logic: password hashing, seed-user parsing
+        domain/                  # pure logic: password hashing, seed-user parsing,
+                                  #   the city catalogue, WMO weather-code labels
+        clients/                 # http.ts (fetchJson + UpstreamError), open-meteo/
+                                  #   (client.ts, mapper.ts, raw-types.ts — vendor shape
+                                  #   never leaves this directory)
       migrations/                # node-pg-migrate (TypeScript migration files)
       scripts/seed-users.ts      # thin CLI: parses SEED_USERS, calls the repository
       test/                      # integration tests (Supertest + a real test database)
     web/                         # React/TypeScript frontend (Vite)
       src/
-        api/                     # http.ts (Bearer + 401 handling), auth.api.ts, types.ts
+        api/                     # http.ts (Bearer + 401 handling), auth.api.ts, travel.api.ts, types.ts
         auth/                    # AuthContext, AuthProvider, LoginPage
-        components/              # AppHeader (shared shell UI)
-        lib/                     # useDelayedFlag (small, reusable, unit-tested hooks)
+        travel/                  # TravelPlannerPage, CitySelect, CurrentWeatherCard,
+                                  #   WeekForecast, useCityData (abort-based stale-response guard)
+        components/              # AppHeader, Skeleton, ErrorState (shared shell UI)
+        lib/                     # useDelayedFlag, weather-icons.ts, iso-date.ts (TZ-safe formatting)
         styles/                  # tokens.css (design tokens), global.css
         test/                    # MSW request-mock handlers + a render-with-providers helper
   e2e/                           # Playwright end-to-end tests (Stage 9)
@@ -296,18 +317,49 @@ _Coming in Stage 6._
 
 ## Timezone / date handling
 
-_Coming in Stage 7._
+The core mechanism landed in Stage 4, alongside the weather endpoint; Stage 7 adds the actual
+forecast-date picker UI on top of it.
+
+**The problem this solves:** if it's 11pm in Calgary, it's already tomorrow in Tokyo. "Today"
+only makes sense relative to the city being viewed, not to the server's clock or the browser's
+own time zone. Open-Meteo's `timezone=auto` parameter resolves the correct IANA time zone
+directly from the requested coordinates, and its `daily.time[0]` is that city's local calendar
+date — so `localDate` in the API response, and `allowedForecastDates.min`, come from Open-Meteo
+itself, not from any date arithmetic this backend performs. Confirmed for real, not just assumed:
+requesting Tokyo and Calgary at the same moment during development returned `localDate: "2026-09-26"`
+for Tokyo and `"2026-09-25"` for Calgary — the exact scenario this design exists for, reproduced
+live against the real API rather than only covered by a unit-test fixture.
+
+**Dates are kept as plain `"YYYY-MM-DD"` strings end to end** — parsed from Open-Meteo, stored
+in `WeatherReport`, and (once Stage 7 adds it) compared directly as strings for range
+validation. `new Date("2026-09-25")` parses as UTC midnight; naively formatting that in the
+browser's own time zone can silently shift the displayed date by a day for any browser west of
+UTC. The frontend's `lib/iso-date.ts` avoids this by explicitly formatting with `timeZone:
+"UTC"` wherever an ISO date string needs a human-readable label (e.g. the week forecast's
+weekday names) — its test demonstrates the exact bug by comparing against Honolulu (UTC-10),
+which really does render one day off without that pin.
 
 ## API overview
 
-| Method & path          | Auth               | Purpose                                                                                          |
-| ---------------------- | ------------------ | ------------------------------------------------------------------------------------------------ |
-| `GET /health`          | none               | `{ "status": "ok" }` — used by the hosting platform's health check                               |
-| `POST /api/auth/login` | none, rate-limited | `{email,password}` → `200 {accessToken, expiresIn, user}`; 400 bad body; 401 invalid credentials |
+## API overview
 
-More endpoints land starting Stage 4 (all behind `requireAuth`, i.e. a valid `Authorization:
-Bearer` header). Every error response uses the same envelope:
+| Method & path                                 | Auth               | Purpose                                                                                          |
+| --------------------------------------------- | ------------------ | ------------------------------------------------------------------------------------------------ |
+| `GET /health`                                 | none               | `{ "status": "ok" }` — used by the hosting platform's health check                               |
+| `POST /api/auth/login`                        | none, rate-limited | `{email,password}` → `200 {accessToken, expiresIn, user}`; 400 bad body; 401 invalid credentials |
+| `GET /api/cities`                             | Bearer             | `200 City[]` — the static catalogue, see [Database / migrations](#database-migrations)           |
+| `GET /api/weather?latitude={n}&longitude={n}` | Bearer             | `200 WeatherReport`; 400 invalid/out-of-range coordinates; 502/504 on an Open-Meteo failure      |
+
+Every route except `/health` and `/api/auth/login` requires a valid `Authorization: Bearer`
+header. Every error response uses the same envelope:
 `{ "error": { "code": "SOME_CODE", "message": "...", "details"?: [...] } }`.
+
+**`WeatherReport`** (see `services/weather.service.ts` for the exact TypeScript types):
+`{ timezone, localDate, allowedForecastDates: {min, max}, units, current: {observedAt,
+temperature, feelsLike, humidity, windSpeed, isDay, condition: {code, label}}, week:
+DailyForecast[7] }`, where each `DailyForecast` is `{ date, condition, temperatureMax,
+temperatureMin, precipitationProbabilityMax, sunrise, sunset }`. More endpoints (city
+description, IP-detected location) land in Stages 5–6.
 
 ## Local setup
 
@@ -353,22 +405,23 @@ commands above work with env vars passed inline instead, which is what CI does.
 **Backend** — validated at startup (`apps/api/src/config/env.ts`); the process refuses to
 start if one is missing or malformed, with a message naming the offending variable.
 
-| Variable                   | Required | Default                 | Purpose                                                                |
-| -------------------------- | -------- | ----------------------- | ---------------------------------------------------------------------- |
-| `NODE_ENV`                 | no       | `development`           | `development` \| `test` \| `production`                                |
-| `PORT`                     | no       | `3000`                  | HTTP port the API listens on                                           |
-| `CORS_ORIGINS`             | no       | `http://localhost:5173` | Comma-separated list of origins allowed to call the API from a browser |
-| `DATABASE_URL`             | **yes**  | —                       | PostgreSQL connection string, e.g. `postgres://user:pass@host:5432/db` |
-| `JWT_SECRET`               | **yes**  | —                       | HS256 signing secret for access tokens; at least 32 characters         |
-| `ACCESS_TOKEN_TTL_SECONDS` | no       | `900` (15 min)          | How long an access token stays valid, in seconds                       |
+| Variable                   | Required | Default                      | Purpose                                                                                                           |
+| -------------------------- | -------- | ---------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `NODE_ENV`                 | no       | `development`                | `development` \| `test` \| `production`                                                                           |
+| `PORT`                     | no       | `3000`                       | HTTP port the API listens on                                                                                      |
+| `CORS_ORIGINS`             | no       | `http://localhost:5173`      | Comma-separated list of origins allowed to call the API from a browser                                            |
+| `DATABASE_URL`             | **yes**  | —                            | PostgreSQL connection string, e.g. `postgres://user:pass@host:5432/db`                                            |
+| `JWT_SECRET`               | **yes**  | —                            | HS256 signing secret for access tokens; at least 32 characters                                                    |
+| `ACCESS_TOKEN_TTL_SECONDS` | no       | `900` (15 min)               | How long an access token stays valid, in seconds                                                                  |
+| `OPEN_METEO_BASE_URL`      | no       | `https://api.open-meteo.com` | Base URL for the weather client — overridden in integration tests to point at a local stub, never at the real API |
 
 Not validated by `config/env.ts` (read directly by their respective one-off scripts, not by the
 running server): `TEST_DATABASE_URL` (integration tests and `db:migrate:test`), `SEED_USERS`
 (`db:seed` — format `"email1:password1,email2:password2"`, see
 [Authentication](#authentication)).
 
-More backend variables (`TRUST_PROXY_HOPS`, `DEFAULT_CITY_ID`, provider base URLs) are added
-as the stages that need them land.
+More backend variables (`TRUST_PROXY_HOPS`, `DEFAULT_CITY_ID`, more provider base URLs) are
+added as the stages that need them land.
 
 **Frontend** — read by Vite at build time (`import.meta.env.VITE_*`). There's no startup
 validation step the way the backend has one — a static site has no "startup" to fail at — so
@@ -405,13 +458,15 @@ users
   updated_at     timestamptz NOT NULL DEFAULT now()
 ```
 
-That's the only table. There's deliberately no `cities` table (the catalogue is a small,
-static, read-only list — see [Why these external APIs](#why-these-external-apis) once Stage 4
-lands), and no travel-history or favourites tables (out of scope — see
-[Known limitations](#known-limitations)). `gen_random_uuid()` needs no extension on PostgreSQL
-13+, and the `CHECK` constraint enforces the email-is-already-lowercase invariant the
-application code relies on for case-insensitive lookups, rather than trusting every write path
-to remember to normalize it.
+That's the only table. There's deliberately no `cities` table — the catalogue
+(`domain/city-catalogue.ts`) is a small, static, read-only list of ~10 cities, and a typed
+constant is version-controlled, type-checked, and needs no query or migration to change; a
+table would earn its place with admin editing, per-user favourites, or thousands of cities,
+none of which apply here. Same reasoning for the absence of travel-history or favourites tables
+(out of scope — see [Known limitations](#known-limitations)). `gen_random_uuid()` needs no
+extension on PostgreSQL 13+, and the `CHECK` constraint enforces the email-is-already-lowercase
+invariant the application code relies on for case-insensitive lookups, rather than trusting
+every write path to remember to normalize it.
 
 ## Running tests
 
@@ -439,18 +494,31 @@ bcrypt compare actually runs on an unknown email, not just that it _would_ if so
 remembered to call it), and the `SEED_USERS` parser (including the UTF-8-bytes-not-characters
 edge case for the 72-byte bcrypt limit).
 
+**Stage 4 adds:** the Open-Meteo mapper, tested against a fixture built from a real captured
+response (not written from documentation) — current-weather conversion (`is_day: 0/1` → a real
+boolean), all 7 days mapped in order, `localDate`/`allowedForecastDates` derived from
+`daily.time`, and two "the vendor lied about its own shape" cases (an empty `daily.time`, a
+`daily` array shorter than the others) that surface as a clear thrown error rather than
+`undefined` silently flowing into the response; `fetchJson`'s timeout/network-failure/non-2xx
+handling, with the global `fetch` stubbed directly (consistent with how the rest of the backend
+injects a fake collaborator, rather than reaching for a request-mocking library the way the
+frontend does — that style is reserved for where there's a real browser-fetch boundary to
+simulate); and the city catalogue's own integrity (unique ids, valid coordinate ranges).
+
 **Integration tests** live under `apps/api/test/` and exercise the whole wired-up app over
-real HTTP with Supertest, against a real PostgreSQL database rather than a mock — a mock
-can't catch a mismatch between a migration's columns and a repository's SQL the way an actual
-query does. `POST /api/auth/login` is covered for valid credentials, an unknown email, a wrong
-password, and a malformed body; there's also a test confirming the token login issues actually
-verifies through the same `TokenService` a protected route will use starting Stage 4, since
-Stage 2 doesn't have a protected route of its own to test end-to-end yet.
+real HTTP with Supertest. `POST /api/auth/login` runs against a real PostgreSQL database rather
+than a mock, since a mock can't catch a mismatch between a migration's columns and a
+repository's SQL the way an actual query does; `/api/cities` and `/api/weather` need no
+database at all, so they're tested with a fake `WeatherService` injected via `createApp()`'s
+dependencies instead — including the Bearer-protection coverage (missing/invalid/valid token)
+that Stage 2 had deferred for lack of a real protected route to test against, and the
+structured-502/504 response `middleware/error-handler.ts` produces when the weather service
+reports an upstream failure.
 
 Coverage (`npm run test:coverage`) is scoped to directories with real logic (`config`,
-`errors`, `middleware`, `services`, `domain`) rather than boilerplate like route wiring —
-there's no 100% target. Expanded through Stage 9; see the project's testing matrix for the
-full requirement-to-test mapping.
+`errors`, `middleware`, `services`, `domain`, `clients/*/mapper.ts`) rather than boilerplate
+like route wiring — there's no 100% target. Expanded through Stage 9; see the project's testing
+matrix for the full requirement-to-test mapping.
 
 **Frontend tests**, as of Stage 3, use React Testing Library and [MSW](https://mswjs.io) to
 intercept `fetch` at the network level rather than mocking `fetch` itself or the API-client
@@ -463,7 +531,22 @@ from `AuthProvider`; and one integration-style test (`App.test.tsx`) that render
 components through a real `AuthProvider`, types into real inputs, and drives an MSW-mocked
 login end to end to confirm the login screen actually gets swapped for the authenticated view —
 the level at which "does the wiring between AuthProvider, http.ts, and LoginPage actually work"
-gets tested, rather than asserted piecewise across separate unit tests.
+gets tested, rather than asserted piecewise across separate unit tests. That same test now
+continues one step further, into Stage 4's travel planner, confirming the default city's
+weather renders with no further user action needed.
+
+**Stage 4's most important frontend test** is `useCityData`'s stale-response guard: MSW's
+`delay()` helper deliberately makes one city's response slow and a second city's fast, switches
+between them before the slow one resolves, and asserts the slow response never overwrites the
+fast one once it's already displayed — a real race condition, reproduced deliberately rather
+than hoped not to occur. `TravelPlannerPage`'s own test goes one level up, switching cities
+through the actual rendered `<select>` and confirming the _displayed_ temperature and condition
+change to match — not just that the dropdown's value changed, but that the switch actually
+re-fetched and re-rendered. `CitySelect`, `CurrentWeatherCard`, and `WeekForecast` each get
+focused tests for their own rendering logic (temperature rounding, the "Today" label always
+applying to the first day regardless of what weekday it falls on, `onChange` firing with the
+right city id), and `iso-date.ts`'s weekday formatter has a test that deliberately compares
+against Honolulu (UTC-10) to prove the date-shift bug it avoids is real, not hypothetical.
 
 ## Deployment architecture
 

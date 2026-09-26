@@ -35,6 +35,10 @@ const envSchema = z.object({
   // API's own `expiresIn` response field can use the same number directly,
   // with no duration-parsing library needed.
   ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(900),
+
+  // Overridable so integration tests can point the weather client at a
+  // local stub server instead of the real API — see clients/open-meteo/.
+  OPEN_METEO_BASE_URL: z.url().default("https://api.open-meteo.com"),
 });
 
 export type Env = z.infer<typeof envSchema>;

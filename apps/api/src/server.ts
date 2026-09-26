@@ -1,17 +1,20 @@
 import { createApp } from "./app.js";
 import { loadEnv } from "./config/env.js";
+import { createOpenMeteoClient } from "./clients/open-meteo/client.js";
 import { createPool } from "./db/pool.js";
 import { createUserRepository } from "./repositories/user.repository.js";
 import { createAuthService } from "./services/auth.service.js";
 import { createTokenService } from "./services/token.service.js";
+import { createWeatherService } from "./services/weather.service.js";
 
 const env = loadEnv();
 
 // Composition root: the one place that wires concrete implementations
-// (a real pg Pool, a real TokenService) into the services the app depends
-// on. Integration tests perform this same wiring themselves against
-// TEST_DATABASE_URL instead of importing anything from this file, which is
-// what keeps them able to build the app without starting a real server.
+// (a real pg Pool, a real TokenService, a real Open-Meteo client) into the
+// services the app depends on. Integration tests perform this same wiring
+// themselves against TEST_DATABASE_URL and a local stub server instead of
+// importing anything from this file, which is what keeps them able to
+// build the app without starting a real server or calling a real upstream.
 const pool = createPool(env.DATABASE_URL);
 const userRepository = createUserRepository(pool);
 const tokenService = createTokenService(env.JWT_SECRET, env.ACCESS_TOKEN_TTL_SECONDS);
@@ -20,8 +23,10 @@ const authService = createAuthService({
   tokenService,
   accessTokenTtlSeconds: env.ACCESS_TOKEN_TTL_SECONDS,
 });
+const openMeteoClient = createOpenMeteoClient(env.OPEN_METEO_BASE_URL);
+const weatherService = createWeatherService({ openMeteoClient });
 
-const app = createApp({ env, authService });
+const app = createApp({ env, authService, tokenService, weatherService });
 
 const server = app.listen(env.PORT, () => {
   console.log(`Jambo API listening on port ${env.PORT} (${env.NODE_ENV})`);

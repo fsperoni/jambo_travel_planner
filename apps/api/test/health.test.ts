@@ -1,16 +1,26 @@
 import { describe, expect, it } from "vitest";
 import request from "supertest";
 import { createApp } from "../src/app.js";
-import { createFakeAuthService } from "./helpers/fakes.js";
+import { createTokenService } from "../src/services/token.service.js";
+import { createFakeAuthService, createFakeWeatherService } from "./helpers/fakes.js";
 import { createTestEnv } from "./helpers/test-env.js";
 
 // Exercises the whole app.ts wiring end to end (Helmet, CORS, JSON parsing,
 // the 404 handler, the central error handler) via real HTTP requests through
 // Supertest, rather than each middleware in isolation — that's what the
 // unit tests next to each middleware file already cover. None of these
-// routes touch auth, so a fake AuthService (never actually called) is
-// enough to satisfy createApp's dependencies without a database.
-const app = createApp({ env: createTestEnv(), authService: createFakeAuthService() });
+// routes touch auth or weather, so fakes (never actually called) are
+// enough to satisfy createApp's dependencies without a database or a real
+// upstream. tokenService is real (it's cheap and stateless — no reason to
+// fake something with no side effects), even though nothing here uses it
+// either.
+const env = createTestEnv();
+const app = createApp({
+  env,
+  authService: createFakeAuthService(),
+  tokenService: createTokenService(env.JWT_SECRET, env.ACCESS_TOKEN_TTL_SECONDS),
+  weatherService: createFakeWeatherService(),
+});
 
 describe("GET /health", () => {
   it("returns 200 with a minimal status payload", async () => {

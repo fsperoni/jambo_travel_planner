@@ -14,6 +14,11 @@ export function createTestEnv(overrides: Partial<Env> = {}): Env {
     DATABASE_URL: "postgres://test:test@localhost:5432/test",
     JWT_SECRET: "test-jwt-secret-at-least-32-characters-long",
     ACCESS_TOKEN_TTL_SECONDS: 900,
+    // ".invalid" is reserved by RFC 2606 to never resolve — a loud, obvious
+    // failure for any test that forgets to override this with a stub
+    // server URL, rather than a real (if wrong) address that might behave
+    // unpredictably.
+    OPEN_METEO_BASE_URL: "http://open-meteo.invalid",
     ...overrides,
   };
 }

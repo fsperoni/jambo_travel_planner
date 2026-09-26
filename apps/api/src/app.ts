@@ -2,14 +2,19 @@ import express, { type Express } from "express";
 import cors from "cors";
 import helmet from "helmet";
 import { createAuthRoutes } from "./routes/auth.routes.js";
+import { createTravelRoutes } from "./routes/travel.routes.js";
 import type { Env } from "./config/env.js";
 import { notFoundHandler } from "./middleware/not-found.js";
 import { errorHandler } from "./middleware/error-handler.js";
 import type { AuthService } from "./services/auth.service.js";
+import type { TokenService } from "./services/token.service.js";
+import type { WeatherService } from "./services/weather.service.js";
 
 export interface AppDependencies {
   env: Pick<Env, "CORS_ORIGINS">;
   authService: AuthService;
+  tokenService: TokenService;
+  weatherService: WeatherService;
 }
 
 /**
@@ -18,7 +23,12 @@ export interface AppDependencies {
  * `createApp` and drive it directly with Supertest, without binding a real
  * port or needing a running process.
  */
-export function createApp({ env, authService }: AppDependencies): Express {
+export function createApp({
+  env,
+  authService,
+  tokenService,
+  weatherService,
+}: AppDependencies): Express {
   const app = express();
 
   // A conservative set of security-related response headers (X-Content-
@@ -50,9 +60,10 @@ export function createApp({ env, authService }: AppDependencies): Express {
   });
 
   // POST /api/auth/login is deliberately not behind requireAuth — see
-  // routes/auth.routes.ts. Feature routes (cities, weather, description,
-  // location) that do require it are mounted here starting Stage 4.
+  // routes/auth.routes.ts. Every route in travel.routes.ts is, since none
+  // of them hand out credentials the way login does.
   app.use("/api/auth", createAuthRoutes(authService));
+  app.use("/api", createTravelRoutes({ tokenService, weatherService }));
 
   app.use(notFoundHandler);
   app.use(errorHandler);

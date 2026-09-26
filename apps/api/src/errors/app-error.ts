@@ -35,3 +35,17 @@ export class UnauthorizedError extends AppError {
     super(401, "UNAUTHORIZED", message);
   }
 }
+
+/**
+ * A third-party API (Open-Meteo, Wikipedia, ipapi.co) timed out, was
+ * unreachable, or returned an error status. `status` is *our* response
+ * status (502 Bad Gateway for an unreachable/erroring upstream, 504
+ * Gateway Timeout for one that took too long) — never the upstream's own
+ * status code passed straight through, since that's an implementation
+ * detail of a vendor we don't want leaking into our API's contract.
+ */
+export class UpstreamError extends AppError {
+  constructor(status: 502 | 504, message: string, details?: unknown) {
+    super(status, "UPSTREAM_ERROR", message, details);
+  }
+}

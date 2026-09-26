@@ -8,6 +8,7 @@ import { createUserRepository } from "../src/repositories/user.repository.js";
 import { createAuthService } from "../src/services/auth.service.js";
 import { createTokenService } from "../src/services/token.service.js";
 import { createTestPool, truncateAllTables } from "./helpers/db.js";
+import { createFakeWeatherService } from "./helpers/fakes.js";
 import { createTestEnv } from "./helpers/test-env.js";
 
 // Runs the real login flow — Express routing, Zod validation, bcrypt,
@@ -38,7 +39,16 @@ describe("POST /api/auth/login", () => {
       tokenService,
       accessTokenTtlSeconds: env.ACCESS_TOKEN_TTL_SECONDS,
     });
-    return createApp({ env, authService });
+    // None of these tests touch /api/cities or /api/weather, so a fake
+    // WeatherService (never actually called) is enough here — the real
+    // protected-route coverage (missing/invalid/valid Bearer token) lives
+    // in travel.test.ts, against the actual /api/cities endpoint.
+    return createApp({
+      env,
+      authService,
+      tokenService,
+      weatherService: createFakeWeatherService(),
+    });
   }
 
   it("returns an access token and the user for valid credentials", async () => {
@@ -114,20 +124,8 @@ describe("POST /api/auth/login", () => {
     expect(res.body.error.code).toBe("VALIDATION_ERROR");
   });
 
-  it("issues a token that requireAuth-protected code would actually accept", async () => {
-    // There's no protected route yet to hit end-to-end (the first one
-    // lands in Stage 4) — this closes the gap by verifying the token this
-    // endpoint issues round-trips through the same TokenService used to
-    // build it, which is the actual mechanism requireAuth relies on.
-    const userRepository = createUserRepository(pool);
-    const passwordHash = await hashPassword("correct horse battery staple");
-    await userRepository.create("person@example.com", passwordHash);
-
-    const res = await request(buildApp())
-      .post("/api/auth/login")
-      .send({ email: "person@example.com", password: "correct horse battery staple" });
-
-    const tokenService = createTokenService(env.JWT_SECRET, env.ACCESS_TOKEN_TTL_SECONDS);
-    expect(() => tokenService.verifyAccessToken(res.body.accessToken as string)).not.toThrow();
-  });
+  // A "does the issued token actually work against requireAuth" test lived
+  // here until Stage 4 — it existed only because no protected route existed
+  // yet to test that end-to-end. Now that one does, that coverage lives in
+  // travel.test.ts against the real /api/cities endpoint instead.
 });

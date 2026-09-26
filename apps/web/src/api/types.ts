@@ -15,3 +15,54 @@ export interface LoginResponse {
   expiresIn: number;
   user: AuthenticatedUser;
 }
+
+export interface City {
+  id: string;
+  name: string;
+  region?: string;
+  countryCode: string;
+  latitude: number;
+  longitude: number;
+  wikipediaTitle: string;
+}
+
+export interface WeatherCondition {
+  code: number;
+  label: string;
+}
+
+export interface CurrentWeather {
+  /** ISO local datetime, city-local — not converted to the browser's own
+   *  time zone; see the backend's weather.service.ts for why. */
+  observedAt: string;
+  temperature: number;
+  feelsLike: number;
+  humidity: number;
+  windSpeed: number;
+  isDay: boolean;
+  condition: WeatherCondition;
+}
+
+export interface DailyForecast {
+  /** ISO calendar date, e.g. "2026-09-25". */
+  date: string;
+  condition: WeatherCondition;
+  temperatureMax: number;
+  temperatureMin: number;
+  precipitationProbabilityMax: number;
+  sunrise: string;
+  sunset: string;
+}
+
+export interface WeatherReport {
+  timezone: string;
+  localDate: string;
+  allowedForecastDates: { min: string; max: string };
+  units: {
+    temperature: string;
+    windSpeed: string;
+    precipitationProbability: string;
+  };
+  current: CurrentWeather;
+  week: DailyForecast[];
+}

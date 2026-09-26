@@ -299,3 +299,91 @@ email could be considerably longer than `demo@example.com` and would hit the sam
 overflow the title did. Verified against the existing test suite (24 tests, still passing - none
 of them exercise this layout, consistent with the point above) and confirmed visually by Fabio
 re-checking the same device emulation afterward.
+
+## 2026-09-25 - Stage 4: cities + weather
+
+**Tool:** Claude Code.
+
+Built the city catalogue, the Open-Meteo client/mapper, `GET /api/cities`, `GET /api/weather`,
+and the frontend that consumes both: `CitySelect`, `CurrentWeatherCard`, `WeekForecast`,
+`useCityData`, and `TravelPlannerPage`.
+
+**Verified against the real API before writing the mapper, not from documentation alone:**
+called `api.open-meteo.com` directly for Calgary's coordinates with the exact parameters
+`client.ts` would use, and built `raw-types.ts`/the mapper's test fixture from that actual
+response rather than what the docs describe. This is also how a real, non-hypothetical
+demonstration of the whole timezone design ended up in the README: requesting Tokyo and Calgary
+from the real running server at the same moment returned `localDate: "2026-09-26"` for Tokyo
+and `"2026-09-25"` for Calgary - the exact "it's already tomorrow somewhere else" scenario the
+`timezone=auto` design exists for, confirmed live rather than only argued for in the abstract.
+
+**A real library behavior confirmed by testing, not assumed:** before writing `fetchJson`'s
+timeout handling, ran a two-line repro against a real local HTTP server that never responds, to
+see what `AbortSignal.timeout()` actually rejects with (a `DOMException` named `"TimeoutError"`,
+which - also confirmed rather than assumed - passes `instanceof Error`), and separately confirmed
+what a genuine connection failure looks like (`TypeError: fetch failed`). Both are exactly what
+`fetchJson` branches on to decide between a 504 (timed out) and a 502 (unreachable/erroring) -
+getting this distinction right depended on knowing the exact error shapes, not guessing at them.
+
+**A design question worked through rather than defaulted on:** whether the Open-Meteo client
+should take `fetchJson` as an injected dependency (matching the project's general preference for
+DI over module mocking) or import it directly. Decided against injecting it - `client.ts`'s own
+URL-construction logic isn't called out as needing a dedicated unit test in the project's testing
+matrix (only the mapper and service orchestration are), and it's cheap, mechanical, low-risk glue
+code, closer to how controllers are treated (tested through integration, not in isolation) than
+to a real seam like the database `Pool`. Verified instead by actually calling the real API
+through the real running server, end to end.
+
+**What I changed after re-reading my own reasoning:** `weather.service.ts`'s dependency type was
+first written as an inline anonymous shape (`{ getForecast(...): Promise<WeatherReport> }`)
+because `client.ts` didn't exist yet when the service was drafted. Once it did, replaced the
+inline shape with the real `OpenMeteoClient` type instead of leaving a duplicate definition
+sitting there - the two would have been easy to let drift out of sync silently, since nothing
+would fail to compile if they diverged (structural typing would still accept a matching object).
+
+**A real gotcha, caught by running the test suite, not assumed away:** `iso-date.test.ts`'s
+first draft used `process.env.TZ` to simulate a browser in a different time zone - that fails to
+typecheck in `apps/web`, because the frontend's tsconfig deliberately has no Node types (it's
+browser code; adding them project-wide would let `process`/`Buffer`/etc. silently compile inside
+real application code too, which is exactly the kind of scope leak worth avoiding rather than
+patching around). Rewrote the test to demonstrate the same bug without any Node-specific API:
+formats the same instant with an explicit `timeZone: "Pacific/Honolulu"` passed directly to
+`Intl`/`Date` (available identically in Node and the browser) and shows it prints "Thu" where
+the UTC-pinned implementation correctly prints "Fri" - arguably a clearer test than the original,
+since it demonstrates the wrong answer and the right one side by side in one place.
+
+**A test bug caught before it shipped:** an early `TravelPlannerPage` test constructed a mock
+weather report with `feelsLike` equal to `temperature`, then asserted on the text "10°C" -
+which matched _two_ elements (the main temperature and the "Feels like" value), failing with a
+"multiple elements found" error rather than the "text not found" I'd have expected from a real
+bug. Fixed by making the fixture's values distinct, and left a comment in the test explaining
+why they need to differ - a fixture that accidentally mirrors real-world coincidences (two
+temperatures matching) creates exactly the kind of ambiguous test failure the tests are
+otherwise designed to avoid.
+
+**Corrections requested by Fabio, after manual browser testing, on the same day:**
+
+- The `WeekForecast` desktop-width fix (stacking high/low temperatures instead of joining them
+  on one line) turned out to leave a "very tiny" horizontal scrollbar rather than fully removing
+  it - caught by Fabio actually looking at it in a real browser, not by the test suite (jsdom
+  doesn't compute real layout, so a few-pixel overflow like this is invisible to it either way).
+  Redid the arithmetic properly this time instead of re-guessing: `.page` caps at 40rem (640px,
+  padding included), leaving 592px; `.week`'s own padding plus its 1px border take another 50px,
+  leaving 542px for the row - but 7 days at the old 4.5rem basis plus their gaps came to 552px,
+  a ~10px shortfall that exactly matches "tiny scrollbar." Reduced the per-day basis to 3.75rem
+  (468px total), which - now that temps are stacked and each day's real content is much narrower
+  than either width - leaves genuine margin (74px) rather than being sized to the exact pixel
+  again.
+- Fabio pointed out the week-strip weather icons have no way to tell what they mean beyond
+  guessing from the shape, and asked whether hovering could show the label. This was a real,
+  pre-existing accessibility gap, not just a missing nicety: the icons were marked
+  `aria-hidden="true"` with no accessible name anywhere nearby, unlike `CurrentWeatherCard`,
+  which already shows its condition as visible text - a screen reader user got temperatures for
+  each day but no indication of the actual weather. Fixed both at once rather than bolting on a
+  tooltip alone: each icon is wrapped in a `<span title={day.condition.label}>` (a native browser
+  tooltip on hover, using the exact label text the backend already provides - no new data or
+  logic needed) with a visually-hidden text sibling carrying the same label for screen readers,
+  reusing the `.srOnly` utility class already established in Stage 4. The icon itself stays
+  decorative rather than trying to make an inline SVG announce its own accessible name directly,
+  since plain text content is unambiguously read by every screen reader, without relying on
+  ARIA-on-SVG support that's historically been inconsistent across browser/AT combinations.

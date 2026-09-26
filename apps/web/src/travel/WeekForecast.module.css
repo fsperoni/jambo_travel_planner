@@ -1,0 +1,82 @@
+.week {
+  padding: var(--space-6);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+}
+
+.title {
+  margin: 0 0 var(--space-4);
+  font-size: 1rem;
+}
+
+.list {
+  display: flex;
+  gap: var(--space-2);
+  overflow-x: auto;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.day {
+  /* 3.75rem (not the original 4.5rem) leaves real margin, not just enough
+     to exactly fit: the card's own padding + border already eat into the
+     page's 40rem cap before the list gets a share, so 7 columns at 4.5rem
+     plus their gaps came out ~10px wider than what's actually left —
+     comfortably invisible, but still enough to trigger the scrollbar. Now
+     that the temps below are stacked instead of joined on one line, each
+     day's real content (the day-label text) is well under even this
+     smaller width, so there's headroom for rendering differences across
+     browsers/fonts instead of being sized to the exact pixel. */
+  flex: 1 0 3.75rem;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-2);
+  border-radius: var(--radius);
+}
+
+.dayLabel {
+  margin: 0;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--color-text-muted);
+}
+
+.iconWrap {
+  display: inline-flex;
+}
+
+.icon {
+  color: var(--color-primary);
+}
+
+.temps {
+  margin: 0;
+  font-size: 0.875rem;
+  text-align: center;
+}
+
+/* Stacked (high above low) rather than side by side on one line — joined
+   on one line, "23°C 7°C" is wider than a day's 4.5rem flex-basis, which
+   pushed every column wider than intended and made all 7 days overflow
+   even on a normal desktop-width card, not just on narrow phones where
+   scrolling the week strip is expected. Stacked, each day's width is back
+   to whatever's naturally widest (the day label), so all 7 fit without
+   scrolling anywhere the card itself has reasonable width — the scroll
+   fallback below only ever kicks in on a viewport too narrow for that. */
+.high,
+.low {
+  display: block;
+}
+
+.high {
+  font-weight: 700;
+}
+
+.low {
+  color: var(--color-text-muted);
+}

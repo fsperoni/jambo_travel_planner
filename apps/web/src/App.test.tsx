@@ -26,5 +26,12 @@ describe("App", () => {
       expect(screen.getByText(VALID_CREDENTIALS.email)).toBeInTheDocument();
     });
     expect(screen.queryByRole("form", { name: "Sign in" })).not.toBeInTheDocument();
+
+    // Continues past login into Stage 4's travel planner: the city list
+    // loads, a default city is selected, and its weather renders — all
+    // without any further user action.
+    expect(await screen.findByRole("combobox", { name: "City" })).toBeInTheDocument();
+    expect(await screen.findByLabelText("Current weather")).toBeInTheDocument();
+    expect(screen.getByLabelText("7-day forecast")).toBeInTheDocument();
   });
 });

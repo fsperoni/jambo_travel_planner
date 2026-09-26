@@ -1,0 +1,24 @@
+.errorState {
+  padding: var(--space-4);
+  border-radius: var(--radius);
+  background: var(--color-error-bg);
+  color: var(--color-error);
+}
+
+.message {
+  margin: 0 0 var(--space-3);
+}
+
+.retryButton {
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid currentColor;
+  border-radius: var(--radius);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.retryButton:hover {
+  background: var(--color-surface);
+}

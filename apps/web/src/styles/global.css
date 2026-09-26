@@ -21,7 +21,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
   color: inherit;
 }
@@ -30,3 +31,19 @@ input {
    navigation matters more here than a custom focus style, and removing the
    outline without a deliberate replacement is a common accessibility bug
    this project isn't going to reintroduce for the sake of appearance. */
+
+/* A standard visually-hidden-but-announced pattern: content stays available
+   to screen readers (unlike `display: none`) while taking up no visual
+   space — used for text that only needs to exist for assistive tech, such
+   as a loading announcement alongside a purely decorative skeleton. */
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
