@@ -3,21 +3,25 @@ import request from "supertest";
 import type { Express } from "express";
 import { createApp } from "../src/app.js";
 import { UpstreamError } from "../src/errors/app-error.js";
+import type { City } from "../src/domain/city-catalogue.js";
+import type { DetectedLocation } from "../src/services/location.service.js";
 import type { CityDescription } from "../src/services/description.service.js";
 import { createTokenService } from "../src/services/token.service.js";
 import type { WeatherReport } from "../src/services/weather.service.js";
 import {
   createFakeAuthService,
   createFakeDescriptionService,
+  createFakeLocationService,
   createFakeWeatherService,
 } from "./helpers/fakes.js";
 import { createTestEnv } from "./helpers/test-env.js";
 
-// Neither /api/cities, /api/weather, nor /api/city-description touches
-// PostgreSQL, so — unlike auth.test.ts — this file needs no real database,
-// just fake services injected via createApp()'s dependencies. The city
-// catalogue itself is fully covered by domain/city-catalogue.test.ts; this
-// file is about the *routes* — auth, validation, and response wiring.
+// Neither /api/cities, /api/weather, /api/city-description, nor
+// /api/location touches PostgreSQL, so — unlike auth.test.ts — this file
+// needs no real database, just fake services injected via createApp()'s
+// dependencies. The city catalogue itself is fully covered by
+// domain/city-catalogue.test.ts; this file is about the *routes* — auth,
+// validation, and response wiring.
 const env = createTestEnv();
 const tokenService = createTokenService(env.JWT_SECRET, env.ACCESS_TOKEN_TTL_SECONDS);
 const validToken = tokenService.signAccessToken({ sub: "user-1", email: "person@example.com" });
@@ -25,13 +29,21 @@ const validToken = tokenService.signAccessToken({ sub: "user-1", email: "person@
 function buildApp({
   weatherService = createFakeWeatherService(),
   descriptionService = createFakeDescriptionService(),
+  locationService = createFakeLocationService(),
+  trustProxyHops,
+}: {
+  weatherService?: ReturnType<typeof createFakeWeatherService>;
+  descriptionService?: ReturnType<typeof createFakeDescriptionService>;
+  locationService?: ReturnType<typeof createFakeLocationService>;
+  trustProxyHops?: number;
 } = {}): Express {
   return createApp({
-    env,
+    env: trustProxyHops === undefined ? env : { ...env, TRUST_PROXY_HOPS: trustProxyHops },
     authService: createFakeAuthService(),
     tokenService,
     weatherService,
     descriptionService,
+    locationService,
   });
 }
 
@@ -241,5 +253,109 @@ describe("GET /api/city-description", () => {
 
     expect(res.status).toBe(200);
     expect(getCityDescription).toHaveBeenCalledWith("São Paulo");
+  });
+});
+
+describe("GET /api/location", () => {
+  const calgary: City = {
+    id: "calgary",
+    name: "Calgary",
+    region: "Alberta",
+    countryCode: "CA",
+    latitude: 51.05,
+    longitude: -114.07,
+    wikipediaTitle: "Calgary",
+  };
+
+  it("returns 401 with no Authorization header", async () => {
+    const res = await request(buildApp()).get("/api/location");
+    expect(res.status).toBe(401);
+  });
+
+  it("returns the detected location from the service as-is", async () => {
+    const detected: DetectedLocation = {
+      city: {
+        id: "sao-paulo",
+        name: "São Paulo",
+        region: "São Paulo",
+        countryCode: "BR",
+        latitude: -23.55,
+        longitude: -46.63,
+        wikipediaTitle: "São Paulo",
+      },
+      source: "ip",
+    };
+    const detectLocation = vi.fn().mockResolvedValue(detected);
+
+    const res = await request(
+      buildApp({ locationService: createFakeLocationService({ detectLocation }) }),
+    )
+      .get("/api/location")
+      .set("Authorization", `Bearer ${validToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(detected);
+  });
+
+  it("returns the default-city fallback shape, including its reason, unchanged", async () => {
+    const detected: DetectedLocation = {
+      city: calgary,
+      source: "default",
+      reason: "lookup-failed",
+    };
+    const detectLocation = vi.fn().mockResolvedValue(detected);
+
+    const res = await request(
+      buildApp({ locationService: createFakeLocationService({ detectLocation }) }),
+    )
+      .get("/api/location")
+      .set("Authorization", `Bearer ${validToken}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(detected);
+  });
+
+  it("passes the correct client IP to the location service, per TRUST_PROXY_HOPS", async () => {
+    // Confirmed empirically, not assumed: with exactly one trusted hop,
+    // Express's req.ip is the *last* entry of X-Forwarded-For — the
+    // address our own (trusted) reverse proxy actually observed — which
+    // correctly ignores a spoofed leftmost entry a client could freely set
+    // on their own request.
+    const detectLocation = vi
+      .fn()
+      .mockResolvedValue({ city: calgary, source: "default", reason: "lookup-failed" });
+
+    await request(
+      buildApp({
+        locationService: createFakeLocationService({ detectLocation }),
+        trustProxyHops: 1,
+      }),
+    )
+      .get("/api/location")
+      .set("Authorization", `Bearer ${validToken}`)
+      .set("X-Forwarded-For", "9.9.9.9, 203.0.113.5");
+
+    expect(detectLocation).toHaveBeenCalledWith("203.0.113.5");
+  });
+
+  it("ignores X-Forwarded-For entirely when TRUST_PROXY_HOPS is 0 (the local-dev default)", async () => {
+    const detectLocation = vi
+      .fn()
+      .mockResolvedValue({ city: calgary, source: "default", reason: "lookup-failed" });
+
+    await request(
+      buildApp({
+        locationService: createFakeLocationService({ detectLocation }),
+        trustProxyHops: 0,
+      }),
+    )
+      .get("/api/location")
+      .set("Authorization", `Bearer ${validToken}`)
+      .set("X-Forwarded-For", "9.9.9.9");
+
+    // Supertest connects over a real loopback socket, so with X-Forwarded-For
+    // ignored, req.ip is the test runner's own loopback address — never the
+    // spoofed header value a client fully controls.
+    expect(detectLocation).not.toHaveBeenCalledWith("9.9.9.9");
   });
 });

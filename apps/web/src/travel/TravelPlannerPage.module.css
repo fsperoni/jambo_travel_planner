@@ -23,3 +23,12 @@
 .weatherAttribution a {
   color: var(--color-primary);
 }
+
+.locationNotice {
+  /* Pulled up against the CitySelect above it rather than sitting a full
+     .page gap away — it reads as a caption on the dropdown, not its own
+     separate block. */
+  margin: calc(var(--space-4) * -1) 0 0;
+  font-size: 0.75rem;
+  color: var(--color-text-muted);
+}

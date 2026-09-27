@@ -501,3 +501,108 @@ Fabio's own framing of the question, and pointing it out rather than silently go
 an incorrect premise was the right call before writing any code on top of it. The
 User-Agent/contact-info decision earlier in this stage was likewise resolved via a direct
 question rather than a guess Fabio had to catch after the fact.
+
+## 2026-09-27 - Stage 6: IP geolocation
+
+**Tool:** Claude Code.
+
+Built `domain/client-ip.ts`, `domain/normalize-city-name.ts`, `clients/ip-geolocation/`,
+`services/location.service.ts`, `GET /api/location`, `TRUST_PROXY_HOPS`/`DEFAULT_CITY_ID`/
+`IP_GEOLOCATION_BASE_URL` env vars, `app.set("trust proxy", ...)`, and the frontend's
+location-driven default-city selection with a provenance notice.
+
+**ipapi.co's free tier turned out to be genuinely, currently exhausted - not a sandbox
+artifact.** Before writing the client, I tried to verify a real successful response the same way
+every other upstream in this project has been verified (curl first, write the mapper from the
+actual response). Every attempt came back `429 {"reason": "RateLimited", ...}` - first from this
+development sandbox, which was plausible (a shared egress IP could easily be over quota from
+unrelated traffic), so I asked Fabio to run the identical curl from his own machine as a second
+data point. He got the exact same 429. That ruled out "sandbox-specific" and confirmed the free
+tier itself is exhausted right now, for real. I flagged this explicitly rather than silently
+building the mapper from memory or documentation alone (this project's whole pattern has been
+"verify against the real API first"), and Fabio chose to proceed on ipapi.co's own published
+schema, cross-checked against the live 429 (which matched the docs' error shape exactly),
+re-verified for real once the free tier's quota resets or in the deployment stage.
+
+**A quirk in ipapi.co's own documentation directly shaped the mapper's design, not just its
+types.** Fetching ipapi.co's docs page turned up something easy to miss and important to get
+right: `RateLimited` is a normal HTTP 429, but "Invalid IP Address" and "Reserved IP Address"
+both come back as **HTTP 200** with an `{error: true, reason: "..."}` body. Had I assumed all
+error cases were non-2xx (a reasonable but wrong assumption for most APIs), `fetchJson` would
+have treated a reserved/private IP as a genuine success and handed a `{error: true, ...}` object
+to code expecting `{city, country_code, ...}` - a real, silent-failure-shaped bug. Instead,
+`mapper.ts` checks for the `error` field in the parsed body regardless of HTTP status, the same
+"read the body, not just the status" lesson already learned from Wikipedia's disambiguation
+handling in Stage 5, now generalized.
+
+**Express's numeric `trust proxy` setting was verified with a throwaway script before being
+trusted, and it corrected a wrong mental model along the way.** My first assumption was that
+`trust proxy = N` trusts the _leftmost_ N entries of `X-Forwarded-For` (the ones closest to the
+original client, per the RFC 7239 convention of appending each hop to the right). A small
+standalone Node script - `app.set('trust proxy', N)`, a route that echoes `req.ip`, and real HTTP
+requests with different `X-Forwarded-For` values - showed the opposite: `req.ip` is the entry N
+positions _from the right_. Once I worked through what that actually means operationally, it's
+exactly correct for this app's real deployment (one reverse proxy in front, Render's own load
+balancer): with `TRUST_PROXY_HOPS=1`, Express trusts that one proxy's own observation (the
+rightmost entry, genuinely appended by infrastructure Fabio controls) and ignores anything a
+client prepends to the header on their own request, which is precisely the spoofing protection
+this setting exists for. Encoding a wrong-but-plausible mental model into `config/env.ts`'s
+comment would have been a subtle, hard-to-catch mistake; verifying first caught it before any
+code shipped.
+
+**A debugging incident worth recording honestly: a background server I thought I'd killed kept
+answering requests.** While verifying the trust-proxy behavior against a real running server (not
+just the unit test), I restarted it with a new `TRUST_PROXY_HOPS` value using `kill %1` between
+two separate Bash tool calls - and got a result that didn't match either the earlier isolated
+script or the integration test I'd just written. `lsof -i :3999` showed the _original_ process
+was still bound to the port: `kill %1` had silently failed, because shell job-control state
+(`%1`) doesn't carry across separate tool invocations in this environment - each one is
+effectively its own subshell context. The curl request had been hitting the stale, unmodified
+server the whole time. Rather than trust that a `kill` "must have worked" because it printed no
+error, I force-killed the actual PID reported by `lsof`, restarted with `nohup ... & disown` so
+the process would survive across tool calls, and re-verified - which then matched the isolated
+script exactly (the rightmost `X-Forwarded-For` entry, spoofed leftmost ignored). Documented here
+because it's a real category of mistake (trusting a background-process lifecycle action
+succeeded without checking) rather than a one-off fluke.
+
+**Diacritic-aware catalogue matching directly reuses a check from the previous stage's follow-up
+question.** ipapi.co returns free-text city names that won't necessarily match this app's own
+`name` field on diacritics (its docs' own example uses plain ASCII city names, and there's no
+guarantee every response does). `domain/normalize-city-name.ts` strips diacritics and
+lowercases before comparing - the exact same normalization the Šibenik verification from the
+prior stage already established works correctly for a diacritic city name, now applied on the
+matching side of the pipeline instead of just the display side.
+
+**Every failure mode was deliberately designed to collapse to the same outcome, and the tests
+assert that collapse rather than just the happy path:** a loopback IP, a thrown `UpstreamError`
+(real outage/rate-limit), and a mapped `null` (reserved/invalid IP, or a "successful" response
+missing a field) all produce `source: "default"` from `location.service.ts` - loopback gets its
+own `"local-development"` reason since it's a different, non-failure situation (there was no
+provider call to fail), but the other two intentionally share `"lookup-failed"`, because no
+caller does anything different with a more specific reason. `location.service.test.ts` asserts
+the loopback case specifically _doesn't_ call the injected client at all (not just that it
+returns the right thing), since a test that only checked the return value could pass even if the
+short-circuit were accidentally removed and the client happened to also fail.
+
+**Frontend design carries forward the split-endpoints philosophy from weather/description, with
+one difference.** Location is fetched independently and never blocks on the city list, matching
+the existing pattern - but unlike weather/description (which key off the _currently selected_
+city and refetch on every change), location only matters once, for the _initial_ selection. That
+asymmetry is why it isn't its own `useCityData`-style hook: a hook implies "this refetches when
+its inputs change," and location detection has no such input - it's a one-time decision made the
+moment both the city list and the detection result are available, guarded by a `useRef` (not
+state) specifically so it can never accidentally re-run and stomp a user's manual city choice
+later.
+
+**A graceful-degradation design choice, stated plainly:** if `GET /api/location` itself is
+unreachable (as opposed to succeeding with a `source: "default"` fallback, which the backend
+already handles), the frontend silently falls back to the first catalogue city - the exact
+pre-Stage-6 behavior - with no error banner and no notice. IP-detected location is a nicety this
+app is designed to survive losing entirely, not a feature whose own failure should be visible to
+someone who never asked to see it.
+
+**Corrections requested by Fabio:** none directly on the implementation this stage. The
+free-tier-exhaustion check (running the same curl himself) was requested by me, as a genuine
+second data point I couldn't get any other way from within this environment - not a correction,
+but worth recording as an instance of a human providing ground truth the AI agent couldn't reach
+on its own.

@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ApiError } from "../api/http";
-import { getCities } from "../api/travel.api";
-import type { City } from "../api/types";
+import { getCities, getLocation } from "../api/travel.api";
+import type { City, DetectedLocation } from "../api/types";
 import { ErrorState } from "../components/ErrorState";
 import { Skeleton } from "../components/Skeleton";
 import { CityDescriptionCard } from "./CityDescriptionCard";
@@ -12,11 +12,28 @@ import { useCityDescription } from "./useCityDescription";
 import { WeekForecast } from "./WeekForecast";
 import styles from "./TravelPlannerPage.module.css";
 
+// A third outcome alongside "still loading" (null) and "detected
+// something" (a real DetectedLocation): GET /api/location itself being
+// unreachable. Every *provider* failure (ipapi.co down, rate-limited,
+// nothing for this IP) is already handled server-side by falling back to
+// the default city — this only covers the endpoint call itself failing,
+// which the page still needs to recover from by picking some starting
+// city, silently, rather than block forever or show an error for a
+// feature the user never explicitly asked to see.
+type LocationOutcome = DetectedLocation | "unavailable";
+
 export function TravelPlannerPage() {
   const [cities, setCities] = useState<City[] | null>(null);
   const [citiesError, setCitiesError] = useState<string | null>(null);
   const [selectedCityId, setSelectedCityId] = useState<string | null>(null);
   const [citiesRetryCount, setCitiesRetryCount] = useState(0);
+  const [locationOutcome, setLocationOutcome] = useState<LocationOutcome | null>(null);
+  const [locationNotice, setLocationNotice] = useState<string | null>(null);
+  // Guards the one-time initial-selection effect below with a ref, not
+  // state — it must never re-run once it's picked a starting city, even
+  // though `cities` itself changes again right after (from that same
+  // effect prepending a dynamic city).
+  const appliedInitialSelectionRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -26,9 +43,6 @@ export function TravelPlannerPage() {
       .then((result) => {
         if (cancelled) return;
         setCities(result);
-        // Defaults to the first city in the catalogue until Stage 6 wires
-        // up real IP-based detection as the actual default.
-        setSelectedCityId((current) => current ?? result[0]?.id ?? null);
       })
       .catch((err: unknown) => {
         if (cancelled) return;
@@ -41,6 +55,61 @@ export function TravelPlannerPage() {
       cancelled = true;
     };
   }, [citiesRetryCount]);
+
+  // Fetched independently of the city list (and never retried on its own —
+  // see the type comment above) — an IP-detection outage shouldn't block
+  // the rest of the page any more than a Wikipedia or Open-Meteo one does.
+  useEffect(() => {
+    let cancelled = false;
+
+    getLocation()
+      .then((result) => {
+        if (!cancelled) setLocationOutcome(result);
+      })
+      .catch(() => {
+        if (!cancelled) setLocationOutcome("unavailable");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Runs exactly once, the moment both the city list and the location
+  // result are ready: picks the initial city, inserting a one-off dynamic
+  // city at the top of the list first if the detected location isn't
+  // already one of the catalogue's ~10 — see the README's IP-geolocation
+  // section.
+  useEffect(() => {
+    if (appliedInitialSelectionRef.current || !cities || locationOutcome === null) return;
+    appliedInitialSelectionRef.current = true;
+
+    if (locationOutcome === "unavailable") {
+      setSelectedCityId(cities[0]?.id ?? null);
+      return;
+    }
+
+    const { city, source, reason } = locationOutcome;
+    setCities((current) => {
+      if (!current || current.some((existing) => existing.id === city.id)) return current;
+      return [city, ...current];
+    });
+    setSelectedCityId(city.id);
+    setLocationNotice(
+      source === "ip"
+        ? "Detected from your IP"
+        : reason === "local-development"
+          ? `Showing ${city.name} (local development)`
+          : `Couldn't detect your location, showing ${city.name}`,
+    );
+  }, [cities, locationOutcome]);
+
+  // A manual city change makes the location notice stale — it describes
+  // how the *initial* selection was made, not this one.
+  function handleCityChange(cityId: string): void {
+    setSelectedCityId(cityId);
+    setLocationNotice(null);
+  }
 
   const selectedCity = cities?.find((city) => city.id === selectedCityId) ?? null;
 
@@ -71,7 +140,7 @@ export function TravelPlannerPage() {
     );
   }
 
-  if (!cities) {
+  if (!cities || locationOutcome === null) {
     return (
       <div className={styles.page} role="status">
         <span className="srOnly">Loading cities…</span>
@@ -85,7 +154,9 @@ export function TravelPlannerPage() {
 
   return (
     <div className={styles.page}>
-      <CitySelect cities={cities} selectedCityId={selectedCityId} onChange={setSelectedCityId} />
+      <CitySelect cities={cities} selectedCityId={selectedCityId} onChange={handleCityChange} />
+
+      {locationNotice && <p className={styles.locationNotice}>{locationNotice}</p>}
 
       {descriptionError && <ErrorState message={descriptionError} onRetry={retryDescription} />}
 

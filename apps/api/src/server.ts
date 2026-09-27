@@ -1,11 +1,14 @@
 import { createApp } from "./app.js";
 import { loadEnv } from "./config/env.js";
+import { createIpGeolocationClient } from "./clients/ip-geolocation/client.js";
 import { createOpenMeteoClient } from "./clients/open-meteo/client.js";
 import { createWikipediaClient } from "./clients/wikipedia/client.js";
+import { findCityById } from "./domain/city-catalogue.js";
 import { createPool } from "./db/pool.js";
 import { createUserRepository } from "./repositories/user.repository.js";
 import { createAuthService } from "./services/auth.service.js";
 import { createDescriptionService } from "./services/description.service.js";
+import { createLocationService } from "./services/location.service.js";
 import { createTokenService } from "./services/token.service.js";
 import { createWeatherService } from "./services/weather.service.js";
 
@@ -29,8 +32,20 @@ const openMeteoClient = createOpenMeteoClient(env.OPEN_METEO_BASE_URL);
 const weatherService = createWeatherService({ openMeteoClient });
 const wikipediaClient = createWikipediaClient(env.WIKIPEDIA_BASE_URL, env.WIKIPEDIA_USER_AGENT);
 const descriptionService = createDescriptionService({ wikipediaClient });
+const ipGeolocationClient = createIpGeolocationClient(env.IP_GEOLOCATION_BASE_URL);
+// findCityById(env.DEFAULT_CITY_ID) is never undefined here: loadEnv()
+// already refused to start if DEFAULT_CITY_ID weren't a real catalogue id.
+const defaultCity = findCityById(env.DEFAULT_CITY_ID)!;
+const locationService = createLocationService({ ipGeolocationClient, defaultCity });
 
-const app = createApp({ env, authService, tokenService, weatherService, descriptionService });
+const app = createApp({
+  env,
+  authService,
+  tokenService,
+  weatherService,
+  descriptionService,
+  locationService,
+});
 
 const server = app.listen(env.PORT, () => {
   console.log(`Jambo API listening on port ${env.PORT} (${env.NODE_ENV})`);

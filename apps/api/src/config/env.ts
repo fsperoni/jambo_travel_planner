@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { findCityById } from "../domain/city-catalogue.js";
 
 // Fail fast: if required configuration is missing or malformed, the process
 // should refuse to start rather than fail confusingly on whichever request
@@ -56,6 +57,29 @@ const envSchema = z.object({
     .default(
       "JamboTravelPlanner/0.1 (local-development; set WIKIPEDIA_USER_AGENT for production) node",
     ),
+
+  // Overridable for the same reason as the other two base URLs — see
+  // clients/ip-geolocation/.
+  IP_GEOLOCATION_BASE_URL: z.url().default("https://ipapi.co"),
+
+  // The city shown (and the source of its weather/description) when IP
+  // geolocation can't run at all (local dev) or doesn't produce a usable
+  // result (provider outage, rate limit, an IP it won't geolocate). Must
+  // be a real id in domain/city-catalogue.ts — checked below, not just by
+  // this schema, since Zod alone can't see the catalogue.
+  DEFAULT_CITY_ID: z.string().min(1).default("calgary"),
+
+  // Express's `trust proxy` setting, as a hop count rather than `true`
+  // (which would trust *any* X-Forwarded-For value, letting a client spoof
+  // its own IP just by sending the header). `0` (the default, correct for
+  // local dev with no reverse proxy in front) means req.ip always reflects
+  // the actual TCP connection. In production behind exactly one reverse
+  // proxy (Render's own load balancer), this must be `1` — confirmed
+  // empirically, not assumed: with hops=1, Express trusts the proxy's own
+  // observed address and returns the *last* entry of X-Forwarded-For,
+  // correctly ignoring anything a client prepends to that header. Verified
+  // for the real deployment in Stage 3.5/11, not just locally.
+  TRUST_PROXY_HOPS: z.coerce.number().int().min(0).default(0),
 });
 
 export type Env = z.infer<typeof envSchema>;
@@ -71,5 +95,16 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
       .join("\n");
     throw new Error(`Invalid environment configuration:\n${issues}`);
   }
+
+  // Zod can validate DEFAULT_CITY_ID is a non-empty string, but not that
+  // it's an id that actually exists — that needs the catalogue itself,
+  // checked here so a typo'd id fails at startup, not the first time
+  // location detection needs to fall back to it.
+  if (!findCityById(result.data.DEFAULT_CITY_ID)) {
+    throw new Error(
+      `Invalid environment configuration:\n  - DEFAULT_CITY_ID: "${result.data.DEFAULT_CITY_ID}" is not a city id in domain/city-catalogue.ts`,
+    );
+  }
+
   return result.data;
 }

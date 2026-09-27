@@ -135,7 +135,15 @@ information in it, intended for local development only. Wikipedia's text is CC B
 which requires attribution back to the source — the app shows a "Read more on Wikipedia" link
 using the response's own canonical `content_urls.desktop.page` URL.
 
-IP geolocation (Stage 6) lands with its own implementation.
+**IP geolocation: [ipapi.co](https://ipapi.co).** HTTPS with no API key required (a real
+requirement here, unlike weather or description: the client's IP is sent to this provider, and
+that shouldn't happen over plain HTTP). The alternative considered, per the project plan, was
+[ip-api.com](https://ip-api.com) — its free tier is HTTP-only, which was disqualifying on its
+own. ipapi.co's own validation already rejects reserved/private/invalid addresses with a
+documented error shape, so this app doesn't need its own IP-range classification logic — see
+[IP-based geolocation](#ip-based-geolocation). Its free tier's request quota turned out to be a
+real, not just theoretical, constraint while building this: it was already exhausted (a live 429) from two independent networks during development, which is exactly the "provider
+unavailable" case the default-city fallback below exists for.
 
 ## Architecture overview
 
@@ -152,7 +160,17 @@ documentation alone) — snake_case, a 0/1 `is_day`, five parallel `daily` array
 five parallel arrays), and `client.ts` calls that mapper internally before returning — so even
 `weather.service.ts`, one layer up, only ever works with our own normalized type. If a second
 weather provider were ever added, only this one directory would need to change. `clients/wikipedia/`
-(Stage 5) follows the identical pattern for the Wikipedia summary endpoint.
+(Stage 5) and `clients/ip-geolocation/` (Stage 6) follow the identical pattern for their own
+upstreams.
+
+**A provider's own "couldn't do this" response is data, not an exception.** ipapi.co has an
+unusual quirk, confirmed against its own documentation and a live 429: a genuine outage/rate
+limit is a normal HTTP error status, but "this IP is reserved" or "this IP is invalid" both come
+back as HTTP 200 with an `{error: true, reason: "..."}` body. `clients/ip-geolocation/mapper.ts`
+has to read the parsed body to catch those, not just rely on `fetchJson`'s HTTP-status-based
+error handling — the same "collapse every non-error 'nothing to show' outcome to one `null`"
+shape as the Wikipedia mapper's disambiguation/404 handling, so `location.service.ts` doesn't
+need to know or care which specific reason a provider gave, only that it has nothing usable.
 
 **`fetchJson`'s "not found" handling is opt-in, via a type-level flag.** `clients/http.ts`
 exposes a `notFoundReturnsNull` option, typed with two overloads so its return type tracks the
@@ -229,15 +247,17 @@ jambo-travel-planner/            (repo root)
         middleware/              # validate, error-handler, not-found,
                                   #   require-auth, login-rate-limit
         routes/, controllers/    # thin HTTP wiring (e.g. travel.routes.ts, travel.controller.ts)
-        services/                # auth, token, weather, description — business logic,
-                                  #   no HTTP or SQL details
+        services/                # auth, token, weather, description, location —
+                                  #   business logic, no HTTP or SQL details
         repositories/            # user.repository.ts — SQL via pg, one file per table
         domain/                  # pure logic: password hashing, seed-user parsing,
                                   #   the city catalogue, WMO weather-code labels,
-                                  #   truncate-text.ts (word-boundary description truncation)
-        clients/                 # http.ts (fetchJson + UpstreamError), open-meteo/ and
-                                  #   wikipedia/ (client.ts, mapper.ts, raw-types.ts each —
-                                  #   vendor shape never leaves its own directory)
+                                  #   truncate-text.ts (word-boundary description truncation),
+                                  #   client-ip.ts (normalize + loopback), normalize-city-name.ts
+        clients/                 # http.ts (fetchJson + UpstreamError), open-meteo/,
+                                  #   wikipedia/, and ip-geolocation/ (client.ts, mapper.ts,
+                                  #   raw-types.ts each — vendor shape never leaves its own
+                                  #   directory)
       migrations/                # node-pg-migrate (TypeScript migration files)
       scripts/seed-users.ts      # thin CLI: parses SEED_USERS, calls the repository
       test/                      # integration tests (Supertest + a real test database)
@@ -248,7 +268,10 @@ jambo-travel-planner/            (repo root)
         travel/                  # TravelPlannerPage, CitySelect, CurrentWeatherCard,
                                   #   WeekForecast, CityDescriptionCard, useCityData and
                                   #   useCityDescription (each with its own abort-based
-                                  #   stale-response guard, fetched independently)
+                                  #   stale-response guard, fetched independently; location
+                                  #   detection is fetched the same way, inline in
+                                  #   TravelPlannerPage rather than its own hook, since it's a
+                                  #   one-time initial-selection concern, not a per-city refetch)
         components/              # AppHeader, Skeleton, ErrorState (shared shell UI)
         lib/                     # useDelayedFlag, weather-icons.ts, iso-date.ts (TZ-safe formatting)
         styles/                  # tokens.css (design tokens), global.css
@@ -338,7 +361,9 @@ message, or any other implementation detail to the client.
   per-user or per-IP limits based on real usage patterns and upstream-provider quotas, rather
   than picking arbitrary limits here."_ This limiter's accuracy depends on `req.ip` reflecting
   the real client, which in turn depends on Express's `trust proxy` matching the actual
-  deployment — verified in the deployment stage (Stage 3.5/6), not guessed at now.
+  deployment — the exact same setting Stage 6's IP geolocation depends on too, see
+  [IP-based geolocation](#ip-based-geolocation); re-verified in the real deployment stage
+  (3.5/11), not just locally.
 - CSRF/XSS implications of the token architecture, and the cookie-specific concerns that come
   with Stage 8, are covered once that stage lands.
 
@@ -353,9 +378,81 @@ message, or any other implementation detail to the client.
   `window.opener` handle back to this app's own window (a real, if minor, security gap for any
   `target="_blank"` link, not specific to Wikipedia).
 
+**Added in Stage 6:**
+
+- A visitor's IP address is personal data under most privacy frameworks (e.g. GDPR) even though
+  it's used only transiently, in memory, to ask ipapi.co for a city — it's never written to the
+  database, never persisted anywhere, and the one place a lookup failure is logged
+  (`location.service.ts`'s `console.warn`) deliberately logs the failure reason, not the IP that
+  caused it.
+- `TRUST_PROXY_HOPS` set to anything other than the deployment's real hop count is a genuine
+  spoofing vector, not just a correctness bug: `true` (trust everything) would let any client
+  claim to be any IP simply by sending its own `X-Forwarded-For` header, which would flow
+  straight into both this feature and the login rate limiter above. Using an explicit hop count
+  instead, verified empirically rather than assumed, is what keeps that header meaningful — see
+  [IP-based geolocation](#ip-based-geolocation).
+
 ## IP-based geolocation
 
-_Coming in Stage 6._
+`GET /api/location` (Bearer-protected, like every other travel endpoint) returns
+`{ city, source: "ip" | "default", reason?: "local-development" | "lookup-failed" }`, and the
+frontend uses it to pick the initially-selected city. Every failure mode below collapses to the
+same outcome — the default city — because a wrong or missing detected city is a degraded
+experience, not a broken one; the app must still work when detection doesn't.
+
+**Where the client IP comes from.** Express's `req.ip` depends entirely on
+`TRUST_PROXY_HOPS` / `app.set("trust proxy", ...)` (see
+[Environment variables](#environment-variables)) being set correctly for the actual deployment
+topology — get it wrong and either a spoofed `X-Forwarded-For` header is trusted (a client could
+claim to be any IP it likes) or the app always sees its own reverse proxy's IP instead of the
+real visitor's. This app's numeric `trust proxy` behavior was verified empirically before being
+relied on, not assumed from memory: with exactly one trusted hop (the setting used in
+production, behind Render's own load balancer), Express takes the _last_ entry of
+`X-Forwarded-For` as `req.ip` — the address that hop actually observed — which correctly ignores
+anything a client prepends to that header on their own request. Confirmed with a real Supertest
+request in `test/travel.test.ts`, not just reasoned about.
+
+**Local development is short-circuited before any provider call.** `domain/client-ip.ts`'s
+`normalizeIp` strips the `::ffff:` prefix Node adds to an IPv4 address on a dual-stack socket,
+and `isLoopback` recognizes `127.0.0.1`/`::1` — a request from the same machine as the server has
+no real client IP to geolocate, so `location.service.ts` returns the default city with reason
+`"local-development"` immediately, without ever calling ipapi.co.
+
+**Matching the provider's answer to the catalogue.** ipapi.co returns a free-text city name and
+an ISO country code, which won't necessarily agree with this app's own `name` field on
+diacritics or casing (e.g. "Sao Paulo" vs. "São Paulo", or "Sibenik" vs. "Šibenik" — see the
+catalogue's own diacritic city, added and verified for exactly this reason).
+`domain/normalize-city-name.ts` strips diacritics and normalizes case before comparing, so
+`findCityByNameAndCountry` matches despite the difference. If the provider's city genuinely isn't
+one of the catalogue's ~10, the backend synthesizes a one-off `{id: "detected", ...}` city from
+the provider's own coordinates and name, which the frontend inserts at the top of the dropdown
+rather than forcing a match against a small curated list — a real location that just isn't
+pre-curated shouldn't be treated as a lookup failure.
+
+**Every other failure looks identical from the outside.** A genuine ipapi.co outage or rate
+limit (`UpstreamError`, a real non-2xx/timeout) and the provider's own `{error: true, reason:
+"..."}` body for a reserved/invalid IP (see [Architecture overview](#architecture-overview) for
+why that needs its own handling) both map to the same `source: "default", reason:
+"lookup-failed"` — there's no caller that would do anything differently with a more specific
+reason. A failure is logged server-side (`console.warn`, not `console.error` — this is an
+expected, already-handled outcome, not the kind of bug `middleware/error-handler.ts`'s 5xx
+logging exists to flag) without ever including the IP address itself, since an IP is personal
+data that doesn't need to end up in logs for this to work.
+
+**Frontend provenance.** `TravelPlannerPage` shows "Detected from your IP" when `source` is
+`"ip"`, or "Couldn't detect your location, showing {city}" when it falls back — so the fallback
+is honestly labelled, not presented as if it were a real detection. The notice is cleared the
+moment the user manually picks a different city, since at that point it no longer describes
+anything that's still true. Detecting the location is fetched independently of the city catalogue
+and never surfaced as a page-level error if it fails outright (as opposed to gracefully falling
+back) — the same split-endpoints reasoning as weather and description: a `GET /api/location`
+failure should degrade to "pick the first catalogue city," silently, rather than block the rest
+of the app.
+
+**`DEFAULT_CITY_ID` is validated at startup, not at request time.** `config/env.ts` checks it
+against the real catalogue (`domain/city-catalogue.ts`) via `findCityById` and refuses to start
+if it's not a real id — the same "fail fast on a typo" philosophy as every other required env
+var, rather than only discovering the mistake the first time detection needs to fall back to it.
 
 ## Timezone / date handling
 
@@ -383,13 +480,14 @@ which really does render one day off without that pin.
 
 ## API overview
 
-| Method & path                                 | Auth               | Purpose                                                                                                                                               |
-| --------------------------------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /health`                                 | none               | `{ "status": "ok" }` — used by the hosting platform's health check                                                                                    |
-| `POST /api/auth/login`                        | none, rate-limited | `{email,password}` → `200 {accessToken, expiresIn, user}`; 400 bad body; 401 invalid credentials                                                      |
-| `GET /api/cities`                             | Bearer             | `200 City[]` — the static catalogue, see [Database / migrations](#database-migrations)                                                                |
-| `GET /api/weather?latitude={n}&longitude={n}` | Bearer             | `200 WeatherReport`; 400 invalid/out-of-range coordinates; 502/504 on an Open-Meteo failure                                                           |
-| `GET /api/city-description?title={string}`    | Bearer             | `200 CityDescription`; missing/disambiguation page → `200` with `description: null` (not an error); 400 missing title; 502/504 on a Wikipedia failure |
+| Method & path                                 | Auth               | Purpose                                                                                                                                                                                              |
+| --------------------------------------------- | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /health`                                 | none               | `{ "status": "ok" }` — used by the hosting platform's health check                                                                                                                                   |
+| `POST /api/auth/login`                        | none, rate-limited | `{email,password}` → `200 {accessToken, expiresIn, user}`; 400 bad body; 401 invalid credentials                                                                                                     |
+| `GET /api/cities`                             | Bearer             | `200 City[]` — the static catalogue, see [Database / migrations](#database-migrations)                                                                                                               |
+| `GET /api/weather?latitude={n}&longitude={n}` | Bearer             | `200 WeatherReport`; 400 invalid/out-of-range coordinates; 502/504 on an Open-Meteo failure                                                                                                          |
+| `GET /api/city-description?title={string}`    | Bearer             | `200 CityDescription`; missing/disambiguation page → `200` with `description: null` (not an error); 400 missing title; 502/504 on a Wikipedia failure                                                |
+| `GET /api/location`                           | Bearer             | `200 DetectedLocation`; every detection failure (local dev, provider outage/rate-limit, an IP it can't place) is a `200` fallback, never an error, see [IP-based geolocation](#ip-based-geolocation) |
 
 Every route except `/health` and `/api/auth/login` requires a valid `Authorization: Bearer`
 header. Every error response uses the same envelope:
@@ -407,7 +505,13 @@ boundary to 280 characters (`domain/truncate-text.ts`) rather than cut mid-word;
 the page's canonical URL, used for the "Read more on Wikipedia" attribution link. Both are
 `null` together, deliberately, when Wikipedia has no article for the title or the title resolves
 to a disambiguation page — treated as a normal "nothing to show" outcome, not an error (a real
-outage is what returns 502/504 instead). IP-detected location lands in Stage 6.
+outage is what returns 502/504 instead).
+
+**`DetectedLocation`** (see `services/location.service.ts`): `{ city: City, source: "ip" |
+"default", reason?: "local-development" | "lookup-failed" }`. `city` is either a real catalogue
+entry or a one-off `{id: "detected", ...}` city synthesized from the provider's own answer — see
+[IP-based geolocation](#ip-based-geolocation) for the full detection flow and why every failure
+mode still returns `200`.
 
 ## Local setup
 
@@ -464,14 +568,14 @@ start if one is missing or malformed, with a message naming the offending variab
 | `OPEN_METEO_BASE_URL`      | no       | `https://api.open-meteo.com`                   | Base URL for the weather client — overridden in integration tests to point at a local stub, never at the real API                                                                                                                                                                  |
 | `WIKIPEDIA_BASE_URL`       | no       | `https://en.wikipedia.org`                     | Base URL for the description client — same overridable-for-tests reasoning as `OPEN_METEO_BASE_URL`                                                                                                                                                                                |
 | `WIKIPEDIA_USER_AGENT`     | no       | a local-dev-only placeholder, no personal info | Sent as the `User-Agent` header on every Wikipedia request, per [Wikimedia's policy](https://foundation.wikimedia.org/wiki/Policy:Wikimedia_Foundation_User-Agent_Policy) — set this to a real contact URL for production; see [Why these external APIs](#why-these-external-apis) |
+| `IP_GEOLOCATION_BASE_URL`  | no       | `https://ipapi.co`                             | Base URL for the IP-geolocation client — same overridable-for-tests reasoning as the other two base URLs                                                                                                                                                                           |
+| `DEFAULT_CITY_ID`          | no       | `calgary`                                      | The city shown when IP detection can't run or doesn't produce a usable result — must be a real id in `domain/city-catalogue.ts`, checked at startup; see [IP-based geolocation](#ip-based-geolocation)                                                                             |
+| `TRUST_PROXY_HOPS`         | no       | `0`                                            | Reverse-proxy hop count for Express's `trust proxy` setting; `0` for local dev (no proxy), `1` in production behind Render's own load balancer — see [IP-based geolocation](#ip-based-geolocation) for what this number actually does and why it was verified empirically          |
 
 Not validated by `config/env.ts` (read directly by their respective one-off scripts, not by the
 running server): `TEST_DATABASE_URL` (integration tests and `db:migrate:test`), `SEED_USERS`
 (`db:seed` — format `"email1:password1,email2:password2"`, see
 [Authentication](#authentication)).
-
-More backend variables (`TRUST_PROXY_HOPS`, `DEFAULT_CITY_ID`, more provider base URLs) are
-added as the stages that need them land.
 
 **Frontend** — read by Vite at build time (`import.meta.env.VITE_*`). There's no startup
 validation step the way the backend has one — a static site has no "startup" to fail at — so
@@ -564,6 +668,17 @@ exactly at the limit, mid-word avoided, and the no-space-found fallback); and `f
 regression there would fail loudly rather than silently returning `null` somewhere a caller
 isn't expecting it.
 
+**Stage 6 adds:** `domain/client-ip.ts` (the `::ffff:` prefix stripped, plain IPv4/IPv6 left
+alone, both loopback forms recognized) and `domain/normalize-city-name.ts` (diacritics stripped,
+case-insensitive, confirmed to make "Sao Paulo"/"São Paulo" and "Sibenik"/"Šibenik" compare
+equal); `clients/ip-geolocation/mapper.ts`, covering ipapi.co's own `{error: true}` body
+alongside a "successful" response missing a field it needs — both collapse to the same `null`, on
+purpose, the same way Wikipedia's disambiguation/404 cases do; and `location.service.ts`'s full
+decision tree with a fake client — loopback short-circuits before the client is ever called
+(asserted directly, not just inferred from the result), a thrown error and a mapped `null` both
+land on the same default-city fallback, a name+country match returns the catalogue entry, and a
+non-match returns a synthesized `{id: "detected", ...}` city.
+
 **Integration tests** live under `apps/api/test/` and exercise the whole wired-up app over
 real HTTP with Supertest. `POST /api/auth/login` runs against a real PostgreSQL database rather
 than a mock, since a mock can't catch a mismatch between a migration's columns and a
@@ -572,7 +687,12 @@ database at all, so they're tested with a fake `WeatherService` injected via `cr
 dependencies instead — including the Bearer-protection coverage (missing/invalid/valid token)
 that Stage 2 had deferred for lack of a real protected route to test against, and the
 structured-502/504 response `middleware/error-handler.ts` produces when the weather service
-reports an upstream failure.
+reports an upstream failure. `/api/location`'s tests include the app's numeric `trust proxy`
+setting end to end, over a real Supertest request rather than a unit test of Express's own
+internals: with `TRUST_PROXY_HOPS=1` and a spoofed leftmost `X-Forwarded-For` entry, the location
+service receives the correct (rightmost, actually-observed) address — the exact behavior verified
+empirically while designing the feature, now pinned down as a regression test — and with
+`TRUST_PROXY_HOPS=0` (the local-dev default), the header is ignored entirely.
 
 Coverage (`npm run test:coverage`) is scoped to directories with real logic (`config`,
 `errors`, `middleware`, `services`, `domain`, `clients/*/mapper.ts`) rather than boilerplate
@@ -622,6 +742,17 @@ default handler for `/api/city-description` yet, so that request failed too, pro
 error alerts where the test expected one isolated failure. Fixing that meant adding a default
 success handler for the endpoint (`test/msw/handlers.ts`) — the kind of test-infrastructure gap
 that only shows up by actually running the suite, not by reading the new code in isolation.
+
+**Stage 6 adds** location-driven default-selection tests on `TravelPlannerPage`: an IP-detected
+city already in the catalogue is selected with a "Detected from your IP" notice; a detected city
+_not_ in the catalogue is inserted at the top of the dropdown and selected; a provider fallback
+shows the honestly-worded "Couldn't detect your location" notice rather than an error; a total
+`/api/location` failure falls back to the first catalogue city silently, with no visible error or
+notice, since detecting a location is a nice-to-have default, not a feature the user asked to see
+fail; and a manual city change clears a previously-shown notice, since it no longer describes
+anything true. The default MSW handler for `/api/location` (`test/msw/handlers.ts`) deliberately
+returns the same city as `MOCK_CITIES[0]`, so every test written before Stage 6 keeps passing
+unchanged rather than needing to also mock an endpoint it was never about.
 
 ## Deployment architecture
 

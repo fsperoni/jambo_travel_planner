@@ -2,6 +2,7 @@ import type { Request, Response } from "express";
 import { z } from "zod";
 import { listCities } from "../domain/city-catalogue.js";
 import type { DescriptionService } from "../services/description.service.js";
+import type { LocationService } from "../services/location.service.js";
 import type { WeatherService } from "../services/weather.service.js";
 
 // Co-located with the controller that reads it, same convention as
@@ -23,16 +24,19 @@ export interface TravelController {
   listCities(req: Request, res: Response): void;
   getWeather(req: Request, res: Response): Promise<void>;
   getCityDescription(req: Request, res: Response): Promise<void>;
+  getLocation(req: Request, res: Response): Promise<void>;
 }
 
 export interface TravelControllerDependencies {
   weatherService: WeatherService;
   descriptionService: DescriptionService;
+  locationService: LocationService;
 }
 
 export function createTravelController({
   weatherService,
   descriptionService,
+  locationService,
 }: TravelControllerDependencies): TravelController {
   return {
     listCities(_req, res) {
@@ -52,6 +56,14 @@ export function createTravelController({
       const { title } = req.valid!.query as CityDescriptionQuery;
       const cityDescription = await descriptionService.getCityDescription(title);
       res.status(200).json(cityDescription);
+    },
+
+    async getLocation(req, res) {
+      // req.ip reflects the socket's real remote address, or the correct
+      // hop of X-Forwarded-For once TRUST_PROXY_HOPS/app.set("trust
+      // proxy", ...) is configured — see config/env.ts.
+      const detected = await locationService.detectLocation(req.ip);
+      res.status(200).json(detected);
     },
   };
 }

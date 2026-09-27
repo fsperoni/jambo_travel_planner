@@ -21,6 +21,9 @@ export function createTestEnv(overrides: Partial<Env> = {}): Env {
     OPEN_METEO_BASE_URL: "http://open-meteo.invalid",
     WIKIPEDIA_BASE_URL: "http://wikipedia.invalid",
     WIKIPEDIA_USER_AGENT: "JamboTravelPlanner/test (test-env.ts) node",
+    IP_GEOLOCATION_BASE_URL: "http://ip-geolocation.invalid",
+    DEFAULT_CITY_ID: "calgary",
+    TRUST_PROXY_HOPS: 0,
     ...overrides,
   };
 }

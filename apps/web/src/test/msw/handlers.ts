@@ -1,5 +1,5 @@
 import { http, HttpResponse } from "msw";
-import type { City, CityDescription, WeatherReport } from "../../api/types";
+import type { City, CityDescription, DetectedLocation, WeatherReport } from "../../api/types";
 
 // The app's default API base URL when VITE_API_BASE_URL isn't set — see
 // api/http.ts. Tests never set that env var, so requests go here, and
@@ -69,6 +69,24 @@ export const MOCK_CITY_DESCRIPTION: CityDescription = {
   sourceUrl: "https://en.wikipedia.org/wiki/Calgary",
 };
 
+// Deliberately the same city (same id) as MOCK_CITIES[0] — tests that
+// don't care about location detection specifically get the same default
+// selection (Calgary) they'd have gotten before Stage 6 added this
+// endpoint, rather than needing every existing test to also mock it.
+export const MOCK_LOCATION: DetectedLocation = {
+  city: {
+    id: "calgary",
+    name: "Calgary",
+    region: "Alberta",
+    countryCode: "CA",
+    latitude: 51.0447,
+    longitude: -114.0719,
+    wikipediaTitle: "Calgary",
+  },
+  source: "default",
+  reason: "local-development",
+};
+
 // Default handlers, used unless a test overrides them with server.use(...)
 // for a specific scenario (an error response, a delayed response, etc.).
 export const handlers = [
@@ -94,4 +112,6 @@ export const handlers = [
   http.get(`${API_BASE_URL}/api/city-description`, () =>
     HttpResponse.json(MOCK_CITY_DESCRIPTION, { status: 200 }),
   ),
+
+  http.get(`${API_BASE_URL}/api/location`, () => HttpResponse.json(MOCK_LOCATION, { status: 200 })),
 ];

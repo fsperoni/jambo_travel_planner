@@ -1,5 +1,6 @@
 import type { AuthService } from "../../src/services/auth.service.js";
 import type { DescriptionService } from "../../src/services/description.service.js";
+import type { LocationService } from "../../src/services/location.service.js";
 import type { WeatherService } from "../../src/services/weather.service.js";
 
 /**
@@ -39,6 +40,19 @@ export function createFakeDescriptionService(
       throw new Error(
         "createFakeDescriptionService: getCityDescription() was not stubbed for this test",
       );
+    },
+    ...overrides,
+  };
+}
+
+/** Same idea as createFakeAuthService, for tests that need createApp()'s
+ *  dependencies satisfied but don't exercise /api/location. */
+export function createFakeLocationService(
+  overrides: Partial<LocationService> = {},
+): LocationService {
+  return {
+    detectLocation: () => {
+      throw new Error("createFakeLocationService: detectLocation() was not stubbed for this test");
     },
     ...overrides,
   };

@@ -5,6 +5,7 @@ import { createTokenService } from "../src/services/token.service.js";
 import {
   createFakeAuthService,
   createFakeDescriptionService,
+  createFakeLocationService,
   createFakeWeatherService,
 } from "./helpers/fakes.js";
 import { createTestEnv } from "./helpers/test-env.js";
@@ -13,11 +14,11 @@ import { createTestEnv } from "./helpers/test-env.js";
 // the 404 handler, the central error handler) via real HTTP requests through
 // Supertest, rather than each middleware in isolation — that's what the
 // unit tests next to each middleware file already cover. None of these
-// routes touch auth, weather, or description, so fakes (never actually
-// called) are enough to satisfy createApp's dependencies without a database
-// or a real upstream. tokenService is real (it's cheap and stateless — no
-// reason to fake something with no side effects), even though nothing here
-// uses it either.
+// routes touch auth, weather, description, or location, so fakes (never
+// actually called) are enough to satisfy createApp's dependencies without a
+// database or a real upstream. tokenService is real (it's cheap and
+// stateless — no reason to fake something with no side effects), even
+// though nothing here uses it either.
 const env = createTestEnv();
 const app = createApp({
   env,
@@ -25,6 +26,7 @@ const app = createApp({
   tokenService: createTokenService(env.JWT_SECRET, env.ACCESS_TOKEN_TTL_SECONDS),
   weatherService: createFakeWeatherService(),
   descriptionService: createFakeDescriptionService(),
+  locationService: createFakeLocationService(),
 });
 
 describe("GET /health", () => {

@@ -16,6 +16,8 @@ describe("loadEnv", () => {
     expect(env.PORT).toBe(3000);
     expect(env.CORS_ORIGINS).toEqual(["http://localhost:5173"]);
     expect(env.ACCESS_TOKEN_TTL_SECONDS).toBe(900);
+    expect(env.DEFAULT_CITY_ID).toBe("calgary");
+    expect(env.TRUST_PROXY_HOPS).toBe(0);
   });
 
   it("parses a comma-separated CORS_ORIGINS into a trimmed array", () => {
@@ -54,5 +56,21 @@ describe("loadEnv", () => {
 
   it("rejects a JWT_SECRET shorter than 32 characters", () => {
     expect(() => loadEnv({ ...requiredBase, JWT_SECRET: "too-short" })).toThrow(/JWT_SECRET/);
+  });
+
+  it("coerces TRUST_PROXY_HOPS from a string", () => {
+    const env = loadEnv({ ...requiredBase, TRUST_PROXY_HOPS: "1" });
+    expect(env.TRUST_PROXY_HOPS).toBe(1);
+  });
+
+  it("rejects a DEFAULT_CITY_ID that isn't a real city in the catalogue", () => {
+    expect(() => loadEnv({ ...requiredBase, DEFAULT_CITY_ID: "atlantis" })).toThrow(
+      /DEFAULT_CITY_ID/,
+    );
+  });
+
+  it("accepts a DEFAULT_CITY_ID that is a real catalogue id", () => {
+    const env = loadEnv({ ...requiredBase, DEFAULT_CITY_ID: "sao-paulo" });
+    expect(env.DEFAULT_CITY_ID).toBe("sao-paulo");
   });
 });

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { CITY_CATALOGUE, findCityById, listCities } from "./city-catalogue.js";
+import {
+  CITY_CATALOGUE,
+  findCityByNameAndCountry,
+  findCityById,
+  listCities,
+} from "./city-catalogue.js";
 
 describe("city catalogue", () => {
   it("has a unique id for every city", () => {
@@ -44,5 +49,22 @@ describe("city catalogue", () => {
 
   it("findCityById returns undefined for an unknown id", () => {
     expect(findCityById("does-not-exist")).toBeUndefined();
+  });
+
+  it("findCityByNameAndCountry matches an exact name and country code", () => {
+    expect(findCityByNameAndCountry("Calgary", "CA")?.id).toBe("calgary");
+  });
+
+  it("findCityByNameAndCountry matches despite a missing diacritic, different case, or padding", () => {
+    expect(findCityByNameAndCountry("sao paulo", "br")?.id).toBe("sao-paulo");
+    expect(findCityByNameAndCountry("  Sibenik  ", "HR")?.id).toBe("sibenik");
+  });
+
+  it("findCityByNameAndCountry does not match a same-named city in a different country", () => {
+    expect(findCityByNameAndCountry("Calgary", "US")).toBeUndefined();
+  });
+
+  it("findCityByNameAndCountry returns undefined for a city not in the catalogue", () => {
+    expect(findCityByNameAndCountry("Atlantis", "XX")).toBeUndefined();
   });
 });

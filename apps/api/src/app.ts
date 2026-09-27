@@ -8,15 +8,17 @@ import { notFoundHandler } from "./middleware/not-found.js";
 import { errorHandler } from "./middleware/error-handler.js";
 import type { AuthService } from "./services/auth.service.js";
 import type { DescriptionService } from "./services/description.service.js";
+import type { LocationService } from "./services/location.service.js";
 import type { TokenService } from "./services/token.service.js";
 import type { WeatherService } from "./services/weather.service.js";
 
 export interface AppDependencies {
-  env: Pick<Env, "CORS_ORIGINS">;
+  env: Pick<Env, "CORS_ORIGINS" | "TRUST_PROXY_HOPS">;
   authService: AuthService;
   tokenService: TokenService;
   weatherService: WeatherService;
   descriptionService: DescriptionService;
+  locationService: LocationService;
 }
 
 /**
@@ -31,8 +33,15 @@ export function createApp({
   tokenService,
   weatherService,
   descriptionService,
+  locationService,
 }: AppDependencies): Express {
   const app = express();
+
+  // How many reverse-proxy hops in front of this app to trust when
+  // deriving req.ip from X-Forwarded-For — see config/env.ts's
+  // TRUST_PROXY_HOPS comment for exactly what this number means and why
+  // `true` (trust everything) would let a client spoof its own IP.
+  app.set("trust proxy", env.TRUST_PROXY_HOPS);
 
   // A conservative set of security-related response headers (X-Content-
   // -Type-Options, X-Frame-Options, a default Content-Security-Policy,
@@ -66,7 +75,10 @@ export function createApp({
   // routes/auth.routes.ts. Every route in travel.routes.ts is, since none
   // of them hand out credentials the way login does.
   app.use("/api/auth", createAuthRoutes(authService));
-  app.use("/api", createTravelRoutes({ tokenService, weatherService, descriptionService }));
+  app.use(
+    "/api",
+    createTravelRoutes({ tokenService, weatherService, descriptionService, locationService }),
+  );
 
   app.use(notFoundHandler);
   app.use(errorHandler);

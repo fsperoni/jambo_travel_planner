@@ -75,3 +75,16 @@ export interface CityDescription {
   description: string | null;
   sourceUrl: string | null;
 }
+
+export interface DetectedLocation {
+  /** Either a real catalogue entry, or a one-off `{id: "detected", ...}`
+   *  city the backend synthesizes from the IP lookup when it doesn't match
+   *  any of the curated ~10 — see the backend's location.service.ts. */
+  city: City;
+  source: "ip" | "default";
+  /** Present only when `source` is "default": why detection didn't run
+   *  (a loopback request, e.g. local dev) or didn't produce a usable
+   *  result (the provider failed, was rate-limited, or had nothing for
+   *  this IP) — both are normal, expected outcomes, not errors. */
+  reason?: "local-development" | "lookup-failed";
+}

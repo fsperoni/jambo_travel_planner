@@ -1,3 +1,5 @@
+import { normalizeCityName } from "./normalize-city-name.js";
+
 export interface City {
   id: string;
   name: string;
@@ -122,4 +124,21 @@ export function listCities(): City[] {
 
 export function findCityById(id: string): City | undefined {
   return CITY_CATALOGUE.find((city) => city.id === id);
+}
+
+/**
+ * Matches an IP-geolocation provider's free-text city name against the
+ * catalogue — used by Stage 6's location detection, where the provider's
+ * spelling/diacritics/casing aren't guaranteed to match ours exactly (e.g.
+ * "Sao Paulo" should still match "São Paulo"). Country code is compared
+ * exactly (not diacritic-normalized — ISO 3166-1 alpha-2 codes are plain
+ * ASCII) so a same-named city in a different country never matches.
+ */
+export function findCityByNameAndCountry(name: string, countryCode: string): City | undefined {
+  const normalizedName = normalizeCityName(name);
+  const normalizedCountry = countryCode.trim().toUpperCase();
+  return CITY_CATALOGUE.find(
+    (city) =>
+      normalizeCityName(city.name) === normalizedName && city.countryCode === normalizedCountry,
+  );
 }
