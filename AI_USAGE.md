@@ -387,3 +387,117 @@ otherwise designed to avoid.
   decorative rather than trying to make an inline SVG announce its own accessible name directly,
   since plain text content is unambiguously read by every screen reader, without relying on
   ARIA-on-SVG support that's historically been inconsistent across browser/AT combinations.
+
+## 2026-09-27 - Stage 5: city description (Wikipedia)
+
+**Tool:** Claude Code.
+
+Built the Wikipedia client/mapper, `GET /api/city-description`, and the frontend that consumes
+it: `CityDescriptionCard`, `useCityDescription`, and their wiring into `TravelPlannerPage`.
+
+**Verified against the real API before writing anything, not from documentation alone:** called
+`en.wikipedia.org/api/rest_v1/page/summary/{title}` directly for several cases before writing
+`raw-types.ts` or the mapper - Calgary (a normal page), São Paulo (to confirm the title gets
+URL-encoded correctly and the `extract` is long enough to actually exercise truncation - 854
+characters for New York City, versus ~255 for Calgary), a non-existent page (a real 404), and
+"Mercury" (a real disambiguation page, `type: "disambiguation"`) - all captured and used as the
+actual fixtures in `mapper.test.ts` rather than hand-written guesses at the shape.
+
+**A real 403, not a documentation footnote, is what actually drove the `User-Agent` design:**
+while verifying the client against the live API, a request sent with an explicitly blank
+`User-Agent` header was rejected outright with a 403 - confirmed directly via curl, not assumed
+from Wikimedia's policy page. That sent me to read
+[Wikimedia's actual User-Agent policy](https://foundation.wikimedia.org/wiki/Policy:Wikimedia_Foundation_User-Agent_Policy),
+which asks for a descriptive client name/version plus contact information identifying who's
+calling the API - an email, a website, or a wiki username.
+
+**Where Fabio's own email could have gone, and why it didn't:** the natural "contact
+information" to put in that header would have been Fabio's email address, but sending a user's
+personal email to a third-party service in an HTTP header, without being asked to, isn't
+something to decide silently - identifying information should only go to an external service
+the user explicitly asks to send it to. Rather than guess, I asked Fabio directly (a placeholder
+URL with no personal information, vs. his email, vs. a generic non-identifying contact string),
+and he chose the placeholder-URL option. `WIKIPEDIA_USER_AGENT`'s default
+(`config/env.ts`) reflects that choice and is explicitly documented as local-dev-only, with
+a comment that production should set a real contact URL.
+
+**A type-level design decision, not just an implementation detail:** `fetchJson`'s existing
+signature always resolved to `Promise<T>` or threw. The Wikipedia client needed a 404 to mean
+"no article" (a normal `200 {description: null}` outcome per the project's own decision on
+description failures), not an error - but the Open-Meteo client's 404 handling was correctly
+left alone, since a missing weather response would mean something is actually broken. Rather
+than add an optional `null` to every caller's return type (forcing the Open-Meteo call site to
+handle a `null` it can never receive), `fetchJson` grew a second, opt-in overload keyed off a
+literal `notFoundReturnsNull: true` flag, so the return type itself - `Promise<T | null>` vs.
+`Promise<T>` - tracks which behavior a given call site asked for. Verified both branches with
+dedicated tests in `http.test.ts` rather than only exercising the one the Wikipedia client uses.
+
+**A length decided by looking at real data, not picked arbitrarily:** capping the description at
+280 characters (`domain/truncate-text.ts`, cut at the nearest word boundary rather than
+mid-word) came after seeing the real range of `extract` lengths across the verification calls
+above (255-854 characters) - short enough to keep the card a predictable size across very
+different cities, long enough that Calgary's already-short extract passes through untouched.
+`truncateAtWordBoundary`'s test cases (unchanged under the limit, cut exactly at the limit, a
+genuine word-boundary cut, and a no-space-found fallback) were checked against expected outputs
+computed with a throwaway `node -e` one-liner rather than hand-counted, since an off-by-one in a
+hand-counted expected string would be indistinguishable from a real bug in the function.
+
+**Split endpoints, continued from Stage 4's design, not revisited from scratch:** `useCityDescription`
+mirrors `useCityData` almost exactly - its own `AbortController`-based stale-response guard, its
+own independent loading/error state, fetched in parallel with weather rather than after it. This
+was a deliberate continuation of the project's existing split-endpoints trade-off (documented in
+the README): a Wikipedia outage shouldn't block the weather cards from rendering, and vice
+versa. `TravelPlannerPage` renders the two blocks with entirely separate loading/error branches
+for exactly that reason.
+
+**A retroactive gap found and fixed while working on Stage 5, not left for later:** while adding
+the description card's "Read more on Wikipedia" attribution link (required by Wikipedia's CC
+BY-SA license), I noticed Stage 4 had never added Open-Meteo's own required attribution
+("Weather data by Open-Meteo.com", CC BY 4.0) despite the weather cards being fully built and
+shipped. Added it alongside the Wikipedia one rather than opening a separate stage for a
+one-paragraph fix - both are the same category of "external data, same licensing obligation,"
+and catching a gap like this while touching related code is better than letting it sit
+undiscovered.
+
+**A test failure that was actually a missing fixture, not a regression:** after wiring
+`useCityDescription` into `TravelPlannerPage`, an existing test ("shows a weather-specific error
+with retry when the city list loads but weather fails") started failing - not because the new
+code was wrong, but because that test only ever mocked `/api/weather` to fail, and
+`/api/city-description` had no default MSW handler yet, so it failed too, producing two error
+alerts where the test expected exactly one isolated weather failure. Fixed by adding a default
+success handler for `/api/city-description` to `test/msw/handlers.ts` (matching the pattern
+already used for `/api/cities` and `/api/weather`), which is also the correct long-term
+behavior: tests that care specifically about weather failing shouldn't have to also think about
+the description endpoint unless they're testing that endpoint.
+
+**A follow-up question from Fabio, verified live rather than assumed:** whether the description
+feature correctly handles a city name in a non-ASCII script - initially framed around Croatian
+using Cyrillic, which needed a factual correction first: Croatian is written in the Latin
+alphabet with diacritics (č, ć, š, ž, đ), not Cyrillic - Cyrillic is used by Serbian, Bulgarian,
+and others. That correction mattered, because the two cases behave differently and I checked
+both for real rather than reasoning about them in the abstract:
+
+- A Latin-script title with a diacritic (`Šibenik`) round-trips correctly end to end - curled
+  directly against `en.wikipedia.org`'s real REST API and got back a normal 200 with the correct
+  `extract`. This needs no special-casing in `clients/wikipedia/client.ts`: `encodeURIComponent()`
+  percent-encodes any Unicode code point, not just ASCII, so the exact same code path already
+  exercised by "São Paulo" in `mapper.test.ts` and `travel.test.ts` covers this too.
+- A genuinely Cyrillic-script query string (e.g. "Нови Сад") returns a real 404 from
+  `en.wikipedia.org` - but that's a fact about Wikipedia's content, not a bug in this app:
+  English Wikipedia's own article titles are always the Latin-transliterated form ("Novi Sad"),
+  confirmed by curling that exact title and getting a normal 200 back. Since `wikipediaTitle` in
+  the catalogue is always the hand-curated canonical title (the same pattern already used for
+  every city), this was never reachable as a real bug - the catalogue would store "Novi Sad",
+  never the Cyrillic form.
+
+Added `Šibenik` (Croatia) to `domain/city-catalogue.ts` as a real, live-verified example of a
+diacritic city name flowing through the whole pipeline, with a code comment pointing back to
+this entry. `city-catalogue.test.ts`'s existing generic assertions (unique id, valid coordinate
+range, non-empty name/countryCode/wikipediaTitle) cover it automatically - no new test needed
+there, since nothing about those checks is script-specific.
+
+**Corrections requested by Fabio:** none this stage - the Croatia/Cyrillic mix-up above was in
+Fabio's own framing of the question, and pointing it out rather than silently going along with
+an incorrect premise was the right call before writing any code on top of it. The
+User-Agent/contact-info decision earlier in this stage was likewise resolved via a direct
+question rather than a guess Fabio had to catch after the fact.

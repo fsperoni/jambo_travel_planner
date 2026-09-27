@@ -66,3 +66,12 @@ export interface WeatherReport {
   current: CurrentWeather;
   week: DailyForecast[];
 }
+
+export interface CityDescription {
+  title: string;
+  /** `null` when Wikipedia has no article for this title, or when the
+   *  title resolves to a disambiguation page — both are a normal, expected
+   *  "nothing to show" outcome, not an error. */
+  description: string | null;
+  sourceUrl: string | null;
+}

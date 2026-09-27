@@ -7,6 +7,7 @@ import type { Env } from "./config/env.js";
 import { notFoundHandler } from "./middleware/not-found.js";
 import { errorHandler } from "./middleware/error-handler.js";
 import type { AuthService } from "./services/auth.service.js";
+import type { DescriptionService } from "./services/description.service.js";
 import type { TokenService } from "./services/token.service.js";
 import type { WeatherService } from "./services/weather.service.js";
 
@@ -15,6 +16,7 @@ export interface AppDependencies {
   authService: AuthService;
   tokenService: TokenService;
   weatherService: WeatherService;
+  descriptionService: DescriptionService;
 }
 
 /**
@@ -28,6 +30,7 @@ export function createApp({
   authService,
   tokenService,
   weatherService,
+  descriptionService,
 }: AppDependencies): Express {
   const app = express();
 
@@ -63,7 +66,7 @@ export function createApp({
   // routes/auth.routes.ts. Every route in travel.routes.ts is, since none
   // of them hand out credentials the way login does.
   app.use("/api/auth", createAuthRoutes(authService));
-  app.use("/api", createTravelRoutes({ tokenService, weatherService }));
+  app.use("/api", createTravelRoutes({ tokenService, weatherService, descriptionService }));
 
   app.use(notFoundHandler);
   app.use(errorHandler);

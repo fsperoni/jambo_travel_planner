@@ -4,9 +4,11 @@ import { getCities } from "../api/travel.api";
 import type { City } from "../api/types";
 import { ErrorState } from "../components/ErrorState";
 import { Skeleton } from "../components/Skeleton";
+import { CityDescriptionCard } from "./CityDescriptionCard";
 import { CitySelect } from "./CitySelect";
 import { CurrentWeatherCard } from "./CurrentWeatherCard";
 import { useCityData } from "./useCityData";
+import { useCityDescription } from "./useCityDescription";
 import { WeekForecast } from "./WeekForecast";
 import styles from "./TravelPlannerPage.module.css";
 
@@ -41,6 +43,16 @@ export function TravelPlannerPage() {
   }, [citiesRetryCount]);
 
   const selectedCity = cities?.find((city) => city.id === selectedCityId) ?? null;
+
+  // Fetched independently — a Wikipedia outage shouldn't block the weather
+  // cards from showing, and vice versa. See the README's split-endpoints
+  // trade-off.
+  const {
+    cityDescription,
+    isLoading: isDescriptionLoading,
+    error: descriptionError,
+    retry: retryDescription,
+  } = useCityDescription(selectedCity?.wikipediaTitle ?? null);
   const {
     weather,
     isLoading: isWeatherLoading,
@@ -64,6 +76,7 @@ export function TravelPlannerPage() {
       <div className={styles.page} role="status">
         <span className="srOnly">Loading cities…</span>
         <Skeleton height="2.75rem" width="20rem" />
+        <Skeleton height="6rem" />
         <Skeleton height="10rem" />
         <Skeleton height="8rem" />
       </div>
@@ -73,6 +86,21 @@ export function TravelPlannerPage() {
   return (
     <div className={styles.page}>
       <CitySelect cities={cities} selectedCityId={selectedCityId} onChange={setSelectedCityId} />
+
+      {descriptionError && <ErrorState message={descriptionError} onRetry={retryDescription} />}
+
+      {!descriptionError && isDescriptionLoading && (
+        <div role="status">
+          <span className="srOnly">
+            Loading description for {selectedCity?.name ?? "the selected city"}…
+          </span>
+          <Skeleton height="6rem" />
+        </div>
+      )}
+
+      {!descriptionError && !isDescriptionLoading && cityDescription && (
+        <CityDescriptionCard cityDescription={cityDescription} />
+      )}
 
       {weatherError && <ErrorState message={weatherError} onRetry={retryWeather} />}
 
@@ -90,6 +118,12 @@ export function TravelPlannerPage() {
         <div className={styles.cards}>
           <CurrentWeatherCard current={weather.current} units={weather.units} />
           <WeekForecast days={weather.week} units={weather.units} />
+          <p className={styles.weatherAttribution}>
+            Weather data by{" "}
+            <a href="https://open-meteo.com" target="_blank" rel="noopener noreferrer">
+              Open-Meteo.com
+            </a>
+          </p>
         </div>
       )}
     </div>

@@ -39,6 +39,23 @@ const envSchema = z.object({
   // Overridable so integration tests can point the weather client at a
   // local stub server instead of the real API — see clients/open-meteo/.
   OPEN_METEO_BASE_URL: z.url().default("https://api.open-meteo.com"),
+
+  // Overridable for the same reason as OPEN_METEO_BASE_URL — see clients/wikipedia/.
+  WIKIPEDIA_BASE_URL: z.url().default("https://en.wikipedia.org"),
+
+  // Wikimedia's API rejects requests with no User-Agent outright (confirmed
+  // directly against the real API: a blank one gets a 403) and its stated
+  // policy wants a client name/version plus contact info (an email, a
+  // website, or a wiki username) identifying who's calling it — see
+  // https://foundation.wikimedia.org/wiki/Policy:Wikimedia_Foundation_User-Agent_Policy.
+  // The default below is a local-dev-only placeholder with no personal
+  // information in it; set this to a real contact URL for production.
+  WIKIPEDIA_USER_AGENT: z
+    .string()
+    .min(1)
+    .default(
+      "JamboTravelPlanner/0.1 (local-development; set WIKIPEDIA_USER_AGENT for production) node",
+    ),
 });
 
 export type Env = z.infer<typeof envSchema>;

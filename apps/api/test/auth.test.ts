@@ -8,7 +8,7 @@ import { createUserRepository } from "../src/repositories/user.repository.js";
 import { createAuthService } from "../src/services/auth.service.js";
 import { createTokenService } from "../src/services/token.service.js";
 import { createTestPool, truncateAllTables } from "./helpers/db.js";
-import { createFakeWeatherService } from "./helpers/fakes.js";
+import { createFakeDescriptionService, createFakeWeatherService } from "./helpers/fakes.js";
 import { createTestEnv } from "./helpers/test-env.js";
 
 // Runs the real login flow — Express routing, Zod validation, bcrypt,
@@ -39,15 +39,17 @@ describe("POST /api/auth/login", () => {
       tokenService,
       accessTokenTtlSeconds: env.ACCESS_TOKEN_TTL_SECONDS,
     });
-    // None of these tests touch /api/cities or /api/weather, so a fake
-    // WeatherService (never actually called) is enough here — the real
-    // protected-route coverage (missing/invalid/valid Bearer token) lives
-    // in travel.test.ts, against the actual /api/cities endpoint.
+    // None of these tests touch /api/cities, /api/weather, or
+    // /api/city-description, so fakes (never actually called) are enough
+    // here — the real protected-route coverage (missing/invalid/valid
+    // Bearer token) lives in travel.test.ts, against the actual
+    // /api/cities endpoint.
     return createApp({
       env,
       authService,
       tokenService,
       weatherService: createFakeWeatherService(),
+      descriptionService: createFakeDescriptionService(),
     });
   }
 

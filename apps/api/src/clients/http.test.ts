@@ -69,4 +69,50 @@ describe("fetchJson", () => {
       fetchJson("https://api.open-meteo.com/v1/forecast", { timeoutMs: 1000 }),
     ).rejects.toThrow(/api\.open-meteo\.com/);
   });
+
+  it("passes custom headers through to fetch", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchJson("https://en.wikipedia.org/api/rest_v1/page/summary/Calgary", {
+      timeoutMs: 1000,
+      headers: { "User-Agent": "JamboTravelPlanner/0.1 (test)" },
+    });
+
+    const [, requestInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(requestInit.headers).toEqual({ "User-Agent": "JamboTravelPlanner/0.1 (test)" });
+  });
+
+  it("returns null for a 404 when notFoundReturnsNull is set, instead of throwing", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("", { status: 404 })));
+
+    const result = await fetchJson("https://en.wikipedia.org/api/rest_v1/page/summary/NotReal", {
+      timeoutMs: 1000,
+      notFoundReturnsNull: true,
+    });
+
+    expect(result).toBeNull();
+  });
+
+  it("still throws for a non-404 failure even with notFoundReturnsNull set", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("", { status: 503 })));
+
+    await expect(
+      fetchJson("https://en.wikipedia.org/api/rest_v1/page/summary/Calgary", {
+        timeoutMs: 1000,
+        notFoundReturnsNull: true,
+      }),
+    ).rejects.toMatchObject({ status: 502, code: "UPSTREAM_ERROR" });
+  });
+
+  it("still throws (rather than returning null) for a 404 when notFoundReturnsNull is not set", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("", { status: 404 })));
+
+    await expect(fetchJson("https://example.com/data", { timeoutMs: 1000 })).rejects.toMatchObject({
+      status: 502,
+      code: "UPSTREAM_ERROR",
+    });
+  });
 });

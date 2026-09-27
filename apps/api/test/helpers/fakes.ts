@@ -1,4 +1,5 @@
 import type { AuthService } from "../../src/services/auth.service.js";
+import type { DescriptionService } from "../../src/services/description.service.js";
 import type { WeatherService } from "../../src/services/weather.service.js";
 
 /**
@@ -23,6 +24,21 @@ export function createFakeWeatherService(overrides: Partial<WeatherService> = {}
   return {
     getWeatherReport: () => {
       throw new Error("createFakeWeatherService: getWeatherReport() was not stubbed for this test");
+    },
+    ...overrides,
+  };
+}
+
+/** Same idea as createFakeAuthService, for tests that need createApp()'s
+ *  dependencies satisfied but don't exercise /api/city-description. */
+export function createFakeDescriptionService(
+  overrides: Partial<DescriptionService> = {},
+): DescriptionService {
+  return {
+    getCityDescription: () => {
+      throw new Error(
+        "createFakeDescriptionService: getCityDescription() was not stubbed for this test",
+      );
     },
     ...overrides,
   };

@@ -117,8 +117,25 @@ parameter resolves the correct IANA time zone directly from coordinates — whic
 the city-local "today" used throughout this app possible without any date-math of our own; see
 [Timezone / date handling](#timezone-date-handling). The alternative considered was
 OpenWeatherMap, which needs a key and doesn't offer that same automatic-timezone behaviour.
+Open-Meteo's free tier is licensed CC BY 4.0, which requires attribution — the app shows
+"Weather data by Open-Meteo.com" beneath the forecast, linked back to the provider.
 
-City description (Stage 5) and IP geolocation (Stage 6) land with their own implementations.
+**City description: the [Wikipedia REST API](https://en.wikipedia.org/api/rest_v1/)**
+(`page/summary/{title}`). Free, no API key, and its `extract` field is already
+plain-paragraph text — no HTML to sanitize or strip client-side, which matters since that text
+gets rendered directly (see [Security considerations](#security-considerations)). The
+catalogue stores each city's exact Wikipedia page title (`domain/city-catalogue.ts`) rather
+than searching by city name at request time, so there's no ambiguous-title search step to get
+wrong. Wikimedia's [User-Agent policy](https://foundation.wikimedia.org/wiki/Policy:Wikimedia_Foundation_User-Agent_Policy)
+requires a descriptive `User-Agent` identifying the calling application and how to reach its
+operator — confirmed for real, not just assumed from the docs: a request with no `User-Agent`
+gets an actual 403 from the live API. `WIKIPEDIA_USER_AGENT` (see
+[Environment variables](#environment-variables)) defaults to a placeholder with no personal
+information in it, intended for local development only. Wikipedia's text is CC BY-SA licensed,
+which requires attribution back to the source — the app shows a "Read more on Wikipedia" link
+using the response's own canonical `content_urls.desktop.page` URL.
+
+IP geolocation (Stage 6) lands with its own implementation.
 
 ## Architecture overview
 
@@ -134,7 +151,17 @@ documentation alone) — snake_case, a 0/1 `is_day`, five parallel `daily` array
 `WeatherReport` type (camelCase, `isDay` as a real boolean, one array of day objects instead of
 five parallel arrays), and `client.ts` calls that mapper internally before returning — so even
 `weather.service.ts`, one layer up, only ever works with our own normalized type. If a second
-weather provider were ever added, only this one directory would need to change.
+weather provider were ever added, only this one directory would need to change. `clients/wikipedia/`
+(Stage 5) follows the identical pattern for the Wikipedia summary endpoint.
+
+**`fetchJson`'s "not found" handling is opt-in, via a type-level flag.** `clients/http.ts`
+exposes a `notFoundReturnsNull` option, typed with two overloads so its return type tracks the
+flag: passing `notFoundReturnsNull: true` returns `Promise<T | null>`, and leaving it off (the
+default) returns `Promise<T>` — a caller can never receive a `null` it didn't opt into handling.
+The Wikipedia client sets it (a missing page is a normal, expected `200 {description: null}`,
+not an error — see the [API overview](#api-overview)), while the Open-Meteo client leaves it
+unset, since a 404 from Open-Meteo would mean something is actually broken, not a normal "no
+article for this city" outcome.
 
 **`createApp()` vs `server.ts`.** `app.ts` exports a `createApp(deps)` function that builds and
 returns the configured Express app — it never calls `.listen()`. `server.ts` is the only file
@@ -202,13 +229,15 @@ jambo-travel-planner/            (repo root)
         middleware/              # validate, error-handler, not-found,
                                   #   require-auth, login-rate-limit
         routes/, controllers/    # thin HTTP wiring (e.g. travel.routes.ts, travel.controller.ts)
-        services/                # auth, token, weather — business logic, no HTTP or SQL details
+        services/                # auth, token, weather, description — business logic,
+                                  #   no HTTP or SQL details
         repositories/            # user.repository.ts — SQL via pg, one file per table
         domain/                  # pure logic: password hashing, seed-user parsing,
-                                  #   the city catalogue, WMO weather-code labels
-        clients/                 # http.ts (fetchJson + UpstreamError), open-meteo/
-                                  #   (client.ts, mapper.ts, raw-types.ts — vendor shape
-                                  #   never leaves this directory)
+                                  #   the city catalogue, WMO weather-code labels,
+                                  #   truncate-text.ts (word-boundary description truncation)
+        clients/                 # http.ts (fetchJson + UpstreamError), open-meteo/ and
+                                  #   wikipedia/ (client.ts, mapper.ts, raw-types.ts each —
+                                  #   vendor shape never leaves its own directory)
       migrations/                # node-pg-migrate (TypeScript migration files)
       scripts/seed-users.ts      # thin CLI: parses SEED_USERS, calls the repository
       test/                      # integration tests (Supertest + a real test database)
@@ -217,7 +246,9 @@ jambo-travel-planner/            (repo root)
         api/                     # http.ts (Bearer + 401 handling), auth.api.ts, travel.api.ts, types.ts
         auth/                    # AuthContext, AuthProvider, LoginPage
         travel/                  # TravelPlannerPage, CitySelect, CurrentWeatherCard,
-                                  #   WeekForecast, useCityData (abort-based stale-response guard)
+                                  #   WeekForecast, CityDescriptionCard, useCityData and
+                                  #   useCityDescription (each with its own abort-based
+                                  #   stale-response guard, fetched independently)
         components/              # AppHeader, Skeleton, ErrorState (shared shell UI)
         lib/                     # useDelayedFlag, weather-icons.ts, iso-date.ts (TZ-safe formatting)
         styles/                  # tokens.css (design tokens), global.css
@@ -311,6 +342,17 @@ message, or any other implementation detail to the client.
 - CSRF/XSS implications of the token architecture, and the cookie-specific concerns that come
   with Stage 8, are covered once that stage lands.
 
+**Added in Stage 5:**
+
+- Wikipedia's `extract` field is plain paragraph text (confirmed against real responses, not
+  assumed), so it's rendered as-is with no `dangerouslySetInnerHTML` and no HTML
+  sanitization step — there's no HTML in it to sanitize. If a future description source ever
+  returned HTML, this would need revisiting.
+- The "Read more on Wikipedia" link opens with `target="_blank"` and, deliberately,
+  `rel="noopener noreferrer"` — without it, the opened Wikipedia tab would get an unguarded
+  `window.opener` handle back to this app's own window (a real, if minor, security gap for any
+  `target="_blank"` link, not specific to Wikipedia).
+
 ## IP-based geolocation
 
 _Coming in Stage 6._
@@ -341,14 +383,13 @@ which really does render one day off without that pin.
 
 ## API overview
 
-## API overview
-
-| Method & path                                 | Auth               | Purpose                                                                                          |
-| --------------------------------------------- | ------------------ | ------------------------------------------------------------------------------------------------ |
-| `GET /health`                                 | none               | `{ "status": "ok" }` — used by the hosting platform's health check                               |
-| `POST /api/auth/login`                        | none, rate-limited | `{email,password}` → `200 {accessToken, expiresIn, user}`; 400 bad body; 401 invalid credentials |
-| `GET /api/cities`                             | Bearer             | `200 City[]` — the static catalogue, see [Database / migrations](#database-migrations)           |
-| `GET /api/weather?latitude={n}&longitude={n}` | Bearer             | `200 WeatherReport`; 400 invalid/out-of-range coordinates; 502/504 on an Open-Meteo failure      |
+| Method & path                                 | Auth               | Purpose                                                                                                                                               |
+| --------------------------------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /health`                                 | none               | `{ "status": "ok" }` — used by the hosting platform's health check                                                                                    |
+| `POST /api/auth/login`                        | none, rate-limited | `{email,password}` → `200 {accessToken, expiresIn, user}`; 400 bad body; 401 invalid credentials                                                      |
+| `GET /api/cities`                             | Bearer             | `200 City[]` — the static catalogue, see [Database / migrations](#database-migrations)                                                                |
+| `GET /api/weather?latitude={n}&longitude={n}` | Bearer             | `200 WeatherReport`; 400 invalid/out-of-range coordinates; 502/504 on an Open-Meteo failure                                                           |
+| `GET /api/city-description?title={string}`    | Bearer             | `200 CityDescription`; missing/disambiguation page → `200` with `description: null` (not an error); 400 missing title; 502/504 on a Wikipedia failure |
 
 Every route except `/health` and `/api/auth/login` requires a valid `Authorization: Bearer`
 header. Every error response uses the same envelope:
@@ -358,8 +399,15 @@ header. Every error response uses the same envelope:
 `{ timezone, localDate, allowedForecastDates: {min, max}, units, current: {observedAt,
 temperature, feelsLike, humidity, windSpeed, isDay, condition: {code, label}}, week:
 DailyForecast[7] }`, where each `DailyForecast` is `{ date, condition, temperatureMax,
-temperatureMin, precipitationProbabilityMax, sunrise, sunset }`. More endpoints (city
-description, IP-detected location) land in Stages 5–6.
+temperatureMin, precipitationProbabilityMax, sunrise, sunset }`.
+
+**`CityDescription`** (see `services/description.service.ts`): `{ title, description: string |
+null, sourceUrl: string | null }`. `description` is Wikipedia's `extract`, truncated at a word
+boundary to 280 characters (`domain/truncate-text.ts`) rather than cut mid-word; `sourceUrl` is
+the page's canonical URL, used for the "Read more on Wikipedia" attribution link. Both are
+`null` together, deliberately, when Wikipedia has no article for the title or the title resolves
+to a disambiguation page — treated as a normal "nothing to show" outcome, not an error (a real
+outage is what returns 502/504 instead). IP-detected location lands in Stage 6.
 
 ## Local setup
 
@@ -405,15 +453,17 @@ commands above work with env vars passed inline instead, which is what CI does.
 **Backend** — validated at startup (`apps/api/src/config/env.ts`); the process refuses to
 start if one is missing or malformed, with a message naming the offending variable.
 
-| Variable                   | Required | Default                      | Purpose                                                                                                           |
-| -------------------------- | -------- | ---------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `NODE_ENV`                 | no       | `development`                | `development` \| `test` \| `production`                                                                           |
-| `PORT`                     | no       | `3000`                       | HTTP port the API listens on                                                                                      |
-| `CORS_ORIGINS`             | no       | `http://localhost:5173`      | Comma-separated list of origins allowed to call the API from a browser                                            |
-| `DATABASE_URL`             | **yes**  | —                            | PostgreSQL connection string, e.g. `postgres://user:pass@host:5432/db`                                            |
-| `JWT_SECRET`               | **yes**  | —                            | HS256 signing secret for access tokens; at least 32 characters                                                    |
-| `ACCESS_TOKEN_TTL_SECONDS` | no       | `900` (15 min)               | How long an access token stays valid, in seconds                                                                  |
-| `OPEN_METEO_BASE_URL`      | no       | `https://api.open-meteo.com` | Base URL for the weather client — overridden in integration tests to point at a local stub, never at the real API |
+| Variable                   | Required | Default                                        | Purpose                                                                                                                                                                                                                                                                            |
+| -------------------------- | -------- | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `NODE_ENV`                 | no       | `development`                                  | `development` \| `test` \| `production`                                                                                                                                                                                                                                            |
+| `PORT`                     | no       | `3000`                                         | HTTP port the API listens on                                                                                                                                                                                                                                                       |
+| `CORS_ORIGINS`             | no       | `http://localhost:5173`                        | Comma-separated list of origins allowed to call the API from a browser                                                                                                                                                                                                             |
+| `DATABASE_URL`             | **yes**  | —                                              | PostgreSQL connection string, e.g. `postgres://user:pass@host:5432/db`                                                                                                                                                                                                             |
+| `JWT_SECRET`               | **yes**  | —                                              | HS256 signing secret for access tokens; at least 32 characters                                                                                                                                                                                                                     |
+| `ACCESS_TOKEN_TTL_SECONDS` | no       | `900` (15 min)                                 | How long an access token stays valid, in seconds                                                                                                                                                                                                                                   |
+| `OPEN_METEO_BASE_URL`      | no       | `https://api.open-meteo.com`                   | Base URL for the weather client — overridden in integration tests to point at a local stub, never at the real API                                                                                                                                                                  |
+| `WIKIPEDIA_BASE_URL`       | no       | `https://en.wikipedia.org`                     | Base URL for the description client — same overridable-for-tests reasoning as `OPEN_METEO_BASE_URL`                                                                                                                                                                                |
+| `WIKIPEDIA_USER_AGENT`     | no       | a local-dev-only placeholder, no personal info | Sent as the `User-Agent` header on every Wikipedia request, per [Wikimedia's policy](https://foundation.wikimedia.org/wiki/Policy:Wikimedia_Foundation_User-Agent_Policy) — set this to a real contact URL for production; see [Why these external APIs](#why-these-external-apis) |
 
 Not validated by `config/env.ts` (read directly by their respective one-off scripts, not by the
 running server): `TEST_DATABASE_URL` (integration tests and `db:migrate:test`), `SEED_USERS`
@@ -505,6 +555,15 @@ injects a fake collaborator, rather than reaching for a request-mocking library 
 frontend does — that style is reserved for where there's a real browser-fetch boundary to
 simulate); and the city catalogue's own integrity (unique ids, valid coordinate ranges).
 
+**Stage 5 adds:** the Wikipedia mapper, tested against real captured response shapes for a
+normal page (Calgary), a disambiguation page (Mercury), and a 404 — all three collapse to
+`{description: null, sourceUrl: null}`, so the test asserts that collapse explicitly rather than
+just the happy path; `truncate-text.ts`'s word-boundary cut (unchanged under the limit, cut
+exactly at the limit, mid-word avoided, and the no-space-found fallback); and `fetchJson`'s
+`notFoundReturnsNull` overload, covered for both the `true` and default/`false` cases so a
+regression there would fail loudly rather than silently returning `null` somewhere a caller
+isn't expecting it.
+
 **Integration tests** live under `apps/api/test/` and exercise the whole wired-up app over
 real HTTP with Supertest. `POST /api/auth/login` runs against a real PostgreSQL database rather
 than a mock, since a mock can't catch a mismatch between a migration's columns and a
@@ -547,6 +606,22 @@ focused tests for their own rendering logic (temperature rounding, the "Today" l
 applying to the first day regardless of what weekday it falls on, `onChange` firing with the
 right city id), and `iso-date.ts`'s weekday formatter has a test that deliberately compares
 against Honolulu (UTC-10) to prove the date-shift bug it avoids is real, not hypothetical.
+
+**Stage 5 adds** `useCityDescription`, structured identically to `useCityData` and given the
+same stale-response race test (a slow title lookup and a fast one, switching before the slow
+one resolves) — written as its own test rather than assumed to work just because `useCityData`'s
+version passes, since the two hooks don't share an implementation. `CityDescriptionCard` is
+tested for both states it can render: description text with a "Read more on Wikipedia" link
+(asserting `href`, `target="_blank"`, and `rel="noopener noreferrer"` explicitly, since a
+missing `rel` on a `target="_blank"` link is a real, if minor, security gap — see
+[Security considerations](#security-considerations)) and the named empty state used when
+`description` is `null`, asserted to _not_ render an error or a link. Because the description
+and weather cards fetch independently, one existing `TravelPlannerPage` test (a weather-only
+upstream failure) surfaced a gap the first time it was run against the new hook: MSW had no
+default handler for `/api/city-description` yet, so that request failed too, producing two
+error alerts where the test expected one isolated failure. Fixing that meant adding a default
+success handler for the endpoint (`test/msw/handlers.ts`) — the kind of test-infrastructure gap
+that only shows up by actually running the suite, not by reading the new code in isolation.
 
 ## Deployment architecture
 

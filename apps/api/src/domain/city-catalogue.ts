@@ -68,6 +68,19 @@ export const CITY_CATALOGUE: readonly City[] = [
     wikipediaTitle: "Paris",
   },
   {
+    id: "sibenik",
+    name: "Šibenik",
+    countryCode: "HR",
+    latitude: 43.735,
+    longitude: 15.8952,
+    // Deliberately includes a diacritic (the "Š") — the exact canonical
+    // title Wikipedia uses. Confirmed against the real API rather than
+    // assumed: encodeURIComponent() percent-encodes any Unicode character,
+    // not just ASCII, so a non-ASCII title needs no special-casing in
+    // clients/wikipedia/client.ts. See AI_USAGE.md for the verification.
+    wikipediaTitle: "Šibenik",
+  },
+  {
     id: "tokyo",
     name: "Tokyo",
     countryCode: "JP",

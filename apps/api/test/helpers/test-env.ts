@@ -19,6 +19,8 @@ export function createTestEnv(overrides: Partial<Env> = {}): Env {
     // server URL, rather than a real (if wrong) address that might behave
     // unpredictably.
     OPEN_METEO_BASE_URL: "http://open-meteo.invalid",
+    WIKIPEDIA_BASE_URL: "http://wikipedia.invalid",
+    WIKIPEDIA_USER_AGENT: "JamboTravelPlanner/test (test-env.ts) node",
     ...overrides,
   };
 }
