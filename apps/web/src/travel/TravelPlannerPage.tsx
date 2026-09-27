@@ -7,6 +7,8 @@ import { Skeleton } from "../components/Skeleton";
 import { CityDescriptionCard } from "./CityDescriptionCard";
 import { CitySelect } from "./CitySelect";
 import { CurrentWeatherCard } from "./CurrentWeatherCard";
+import { ForecastDatePicker } from "./ForecastDatePicker";
+import { SelectedDayCard } from "./SelectedDayCard";
 import { useCityData } from "./useCityData";
 import { useCityDescription } from "./useCityDescription";
 import { WeekForecast } from "./WeekForecast";
@@ -29,6 +31,7 @@ export function TravelPlannerPage() {
   const [citiesRetryCount, setCitiesRetryCount] = useState(0);
   const [locationOutcome, setLocationOutcome] = useState<LocationOutcome | null>(null);
   const [locationNotice, setLocationNotice] = useState<string | null>(null);
+  const [selectedDate, setSelectedDate] = useState<string | null>(null);
   // Guards the one-time initial-selection effect below with a ref, not
   // state — it must never re-run once it's picked a starting city, even
   // though `cities` itself changes again right after (from that same
@@ -126,8 +129,23 @@ export function TravelPlannerPage() {
     weather,
     isLoading: isWeatherLoading,
     error: weatherError,
+    errorCode: weatherErrorCode,
     retry: retryWeather,
-  } = useCityData(selectedCity?.latitude ?? null, selectedCity?.longitude ?? null);
+  } = useCityData(selectedCity?.latitude ?? null, selectedCity?.longitude ?? null, selectedDate);
+
+  // A previously-picked date can become invalid the moment the city
+  // changes — the allowed range is per-city (it's relative to *that*
+  // city's own local "today", not the browser's), so a date valid for
+  // Calgary might not be for Tokyo. Rather than guess at the new range
+  // ahead of time, this lets the request go through and recovers from the
+  // one error code that means specifically that: silently drop the date
+  // and refetch without it, which is exactly "keep the date only if it's
+  // still valid for the new city."
+  useEffect(() => {
+    if (weatherErrorCode === "FORECAST_DATE_OUT_OF_RANGE" && selectedDate !== null) {
+      setSelectedDate(null);
+    }
+  }, [weatherErrorCode, selectedDate]);
 
   if (citiesError) {
     return (
@@ -189,6 +207,15 @@ export function TravelPlannerPage() {
         <div className={styles.cards}>
           <CurrentWeatherCard current={weather.current} units={weather.units} />
           <WeekForecast days={weather.week} units={weather.units} />
+          <ForecastDatePicker
+            min={weather.allowedForecastDates.min}
+            max={weather.allowedForecastDates.max}
+            value={selectedDate}
+            onChange={setSelectedDate}
+          />
+          {weather.selectedDay && (
+            <SelectedDayCard day={weather.selectedDay} units={weather.units} />
+          )}
           <p className={styles.weatherAttribution}>
             Weather data by{" "}
             <a href="https://open-meteo.com" target="_blank" rel="noopener noreferrer">

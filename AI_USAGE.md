@@ -606,3 +606,99 @@ free-tier-exhaustion check (running the same curl himself) was requested by me, 
 second data point I couldn't get any other way from within this environment - not a correction,
 but worth recording as an instance of a human providing ground truth the AI agent couldn't reach
 on its own.
+
+## 2026-09-27 - Stage 7: 5-day forecast date picker
+
+**Tool:** Claude Code.
+
+Built the `date` query param on `GET /api/weather`, `weather.service.ts`'s range validation and
+`selectedDay` attachment, `ForecastDatePicker` and `SelectedDayCard`, and `TravelPlannerPage`'s
+recovery logic for a date that stops being valid after a city switch.
+
+**Fabio's own suggestion at the start of this stage matched the plan already in place, and I
+said so rather than silently treating it as new scope:** he asked for the date picker to only
+allow selecting today through +5 days, not just validate that server-side. That's exactly what
+`<input type="date" min max>` (already the documented plan for this stage) does natively - most
+browsers grey out or refuse out-of-range dates directly in their own picker UI. Worth stating
+plainly rather than either claiming credit for his idea or silently implementing it without
+acknowledging the overlap.
+
+**A real Zod double-message bug, caught by actually reading the response, not just checking the
+status code:** the first version of the calendar-date schema chained `.regex(...).refine(...)` -
+a malformed date like `"09-27-2026"` failed _both_ checks, so the 400 response listed two
+overlapping, slightly confusing messages instead of one clear one. Fixed by combining both checks
+into a single `.refine()`, which also simplified the schema itself. This mirrors the project's
+running lesson that a response's exact shape needs to actually be looked at, not assumed correct
+because the status code was right.
+
+**The calendar-date validation itself was verified against real edge cases before being trusted,
+not assumed correct because the regex "looks right":** a bare `/^\d{4}-\d{2}-\d{2}$/` regex would
+accept `"2026-02-30"` (February has no 30th). Checked with a throwaway script before writing the
+integration test: `Date.UTC(2026, 1, 30)` rolls over to March 2nd, so comparing the constructed
+date's own year/month/day back against the input catches this. This is exactly the same
+"verify a library's actual behavior, don't assume it" discipline used for `AbortSignal.timeout()`
+in Stage 4 and Express's `trust proxy` in Stage 6, applied to `Date.UTC`'s rollover behavior this
+time - plus the leap-year case (`"2026-02-29"` correctly rejected, `"2024-02-29"` correctly
+accepted).
+
+**A design question worked through explicitly: why hit the network again for data already in
+`week`?** Since `week` already contains all 7 days (today..+6) from the initial fetch, and the
+picker's own range (today..+5) is a subset of that, the frontend _could_ find the matching day
+locally with zero extra requests. Went with a real `date` query param and a real server round
+trip anyway, for two reasons: it's what the project's own plan documents as the Stage 7 API
+contract (`GET /api/weather?...&date=`), and - more importantly for the walkthrough - it means
+the _server_, not client-side JavaScript a user could tamper with, is what actually enforces which
+dates are selectable. A client-only check would be exactly the kind of thing interview question
+#9 (project plan) asks about: "who enforces it?" The honest answer here is "the server does,
+always," not "the UI happens to prevent it usually."
+
+**A second, related design decision: recover from an invalid date reactively, not by predicting
+it in advance.** A date valid for Calgary might not be valid for Tokyo - the allowed range is
+relative to _that_ city's own local "today," not the browser's - so switching cities can silently
+invalidate a previously-picked date. Rather than have the frontend try to recompute or guess at
+the new city's range before it's even been fetched, `useCityData` now exposes the failed
+request's error `code` (not just its message), and `TravelPlannerPage` watches specifically for
+`FORECAST_DATE_OUT_OF_RANGE` to clear the date and let the hook's own effect naturally refetch
+without it. This keeps the hook itself simple (still just "fetch weather for these inputs, report
+what happened") while the _page_ owns the recovery policy - the same division of responsibility
+already used for the location-driven initial-selection effect in Stage 6.
+
+**Reused a hard-won Stage 4 lesson instead of re-learning it:** `SelectedDayCard`'s first draft
+joined high/low temperatures on one line, the exact layout choice that caused `WeekForecast`'s
+real overflow bug back in Stage 4. Caught while writing the component, before it ever ran in a
+real browser, and stacked them instead - the same fix already proven correct, applied
+proactively this time instead of waiting to rediscover the bug.
+
+**A genuinely subtle timezone point, verified rather than pattern-matched from the existing
+`formatWeekday`/`formatFullDate` code:** sunrise/sunset needed their own formatter, and the
+instinct was to copy the existing `timeZone: "UTC"` pin - which would have been wrong here.
+`localDate` strings need UTC-pinning because they're pure calendar dates with no time-of-day
+component to lose. `sunrise`/`sunset`/`observedAt` are different: timezone-_less_ local
+datetimes, already the city's own correct wall-clock time as written. `new Date(...)` parsing a
+string with no offset treats it as local time in the runtime's own zone, and formatting with _no_
+explicit `timeZone` uses that same zone - the two cancel out. Confirmed directly rather than
+reasoned about in the abstract: ran the exact same parse-then-format call under `TZ=UTC`,
+`TZ=Pacific/Honolulu`, and `TZ=Asia/Tokyo` and got "7:38 AM" back every time. Naively copying the
+UTC pin from the date formatters would have been a real, live bug - correct-looking code that
+silently shifts every sunrise/sunset time by however far the browser's zone is from UTC.
+
+**A pre-existing test broken by a legitimate signature change, caught by actually running the
+suite:** adding a third `date` parameter to `weatherService.getWeatherReport` meant the
+controller now always calls it with three arguments (the third `undefined` when no date is
+requested) - which broke an existing integration test's `toHaveBeenCalledWith(lat, lon)`
+assertion, since a mock records the arguments it actually received, and two arguments isn't the
+same call shape as three (even when the third is `undefined`). Fixed by updating the assertion to
+`toHaveBeenCalledWith(lat, lon, undefined)` - a small, correct consequence of an intentional
+signature change, not a hidden bug, but one that only surfaced by running the existing suite
+rather than only writing new tests for new behavior.
+
+**A test-writing mistake caught before it shipped, the same class of bug this project's tests are
+otherwise designed to avoid:** the first version of `TravelPlannerPage`'s date-selection test
+asserted `screen.getByText("15°C")` after picking a date - which failed with "multiple elements
+found," because the same day's temperature is _also_ visible in the still-rendered week strip,
+not just the new selected-day card. Scoped the query with `within(selectedDayCard)` instead of
+loosening the assertion - the ambiguous-fixture lesson from Stage 4's `feelsLike`/`temperature`
+test bug, recognized and avoided directly this time rather than rediscovered from scratch.
+
+**Corrections requested by Fabio:** none this stage beyond the shared suggestion noted above,
+which matched the existing plan rather than changing it.

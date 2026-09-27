@@ -1,5 +1,6 @@
 import type { WeatherCondition } from "../domain/weather-codes.js";
 import type { OpenMeteoClient } from "../clients/open-meteo/client.js";
+import { ForecastDateOutOfRangeError } from "../errors/app-error.js";
 
 export interface CurrentWeather {
   /** ISO local datetime (e.g. "2026-09-25T20:30"), in the city's own time
@@ -41,10 +42,16 @@ export interface WeatherReport {
   };
   current: CurrentWeather;
   week: DailyForecast[];
+  /** The `week` entry matching a requested `date`, pulled out for
+   *  convenience — present only when the caller asked for a specific
+   *  date. Absent (not `null`) when no date was requested, so the
+   *  frontend can tell "no date picked" apart from "picked a date" with a
+   *  plain `if (report.selectedDay)` rather than a three-state field. */
+  selectedDay?: DailyForecast;
 }
 
 export interface WeatherService {
-  getWeatherReport(latitude: number, longitude: number): Promise<WeatherReport>;
+  getWeatherReport(latitude: number, longitude: number, date?: string): Promise<WeatherReport>;
 }
 
 export interface WeatherServiceDependencies {
@@ -52,20 +59,42 @@ export interface WeatherServiceDependencies {
 }
 
 /**
- * A thin pass-through today — it exists as a service (rather than having
- * the controller call the client directly) because it's the layer that
- * will own real business logic starting Stage 7: validating a requested
- * forecast date against `allowedForecastDates` and picking out the
- * matching day as `selectedDay`. That's request-shaping logic specific to
- * *this app*, not something the Open-Meteo client (which only knows how to
- * fetch and normalize a 7-day forecast) should be responsible for.
+ * A thin pass-through when no `date` is requested; with one, this is the
+ * layer that owns the business logic the Open-Meteo client shouldn't have
+ * to know about — validating the requested date against the report's own
+ * `allowedForecastDates` and picking out the matching day as
+ * `selectedDay`. The *shape* of the date string itself (a real, valid
+ * "YYYY-MM-DD") is already guaranteed by controllers/travel.controller.ts's
+ * Zod schema by the time it reaches here; this only checks whether that
+ * valid date falls in range for *this* city.
  */
 export function createWeatherService({
   openMeteoClient,
 }: WeatherServiceDependencies): WeatherService {
   return {
-    getWeatherReport(latitude, longitude) {
-      return openMeteoClient.getForecast(latitude, longitude);
+    async getWeatherReport(latitude, longitude, date) {
+      const report = await openMeteoClient.getForecast(latitude, longitude);
+      if (date === undefined) {
+        return report;
+      }
+
+      const { min, max } = report.allowedForecastDates;
+      if (date < min || date > max) {
+        throw new ForecastDateOutOfRangeError({ min, max });
+      }
+
+      const selectedDay = report.week.find((day) => day.date === date);
+      if (!selectedDay) {
+        // Shouldn't happen structurally: `week` always spans
+        // [min, min + 6] and `date` has just been checked to fall in
+        // [min, max] (max = min + 5) — but Open-Meteo lying about its own
+        // shape is already a documented failure mode (see the
+        // open-meteo mapper), so this fails loudly rather than silently
+        // omitting selectedDay from the response.
+        throw new Error(`No forecast entry found for requested date ${date}`);
+      }
+
+      return { ...report, selectedDay };
     },
   };
 }

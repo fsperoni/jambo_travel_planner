@@ -65,6 +65,9 @@ export interface WeatherReport {
   };
   current: CurrentWeather;
   week: DailyForecast[];
+  /** The `week` entry matching a requested forecast date — present only
+   *  when the caller asked for one (see `getWeather`'s `date` param). */
+  selectedDay?: DailyForecast;
 }
 
 export interface CityDescription {

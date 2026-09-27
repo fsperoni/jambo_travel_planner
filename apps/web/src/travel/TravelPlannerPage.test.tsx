@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
@@ -185,6 +185,132 @@ describe("TravelPlannerPage", () => {
     // Location detection is a nice-to-have default, not a hard requirement
     // — its own failure shouldn't surface as a visible error or notice.
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("lets the user pick a forecast date and shows the selected-day card", async () => {
+    const selectedDay = {
+      date: "2026-09-29",
+      condition: { code: 3, label: "Overcast" },
+      temperatureMax: 15,
+      temperatureMin: 5,
+      precipitationProbabilityMax: 20,
+      sunrise: "2026-09-29T07:00",
+      sunset: "2026-09-29T19:00",
+    };
+
+    server.use(
+      http.get(`${API_BASE_URL}/api/cities`, () => HttpResponse.json(MOCK_CITIES)),
+      http.get(`${API_BASE_URL}/api/weather`, ({ request }) => {
+        const url = new URL(request.url);
+        const date = url.searchParams.get("date");
+        return HttpResponse.json({
+          timezone: "UTC",
+          localDate: "2026-09-25",
+          allowedForecastDates: { min: "2026-09-25", max: "2026-09-30" },
+          units: { temperature: "°C", windSpeed: "km/h", precipitationProbability: "%" },
+          current: {
+            observedAt: "2026-09-25T12:00",
+            temperature: 10,
+            feelsLike: 11,
+            humidity: 50,
+            windSpeed: 10,
+            isDay: true,
+            condition: { code: 0, label: "Clear" },
+          },
+          week: [selectedDay],
+          ...(date === selectedDay.date ? { selectedDay } : {}),
+        });
+      }),
+    );
+
+    const user = userEvent.setup();
+    render(<TravelPlannerPage />);
+
+    const datePicker = await screen.findByLabelText("See forecast for a specific day");
+    expect(screen.queryByLabelText(/Forecast for/)).not.toBeInTheDocument();
+
+    await user.type(datePicker, selectedDay.date);
+
+    const selectedDayCard = await screen.findByLabelText("Forecast for Tuesday, September 29");
+    // "15°C" also appears in the (still-rendered) week strip for the same
+    // day, so this scopes the assertion to the selected-day card
+    // specifically rather than asserting on ambiguous page-wide text.
+    expect(within(selectedDayCard).getByText("15°C")).toBeInTheDocument();
+  });
+
+  it("silently drops a previously selected date that's no longer in range after switching cities", async () => {
+    const [, tokyo] = MOCK_CITIES;
+
+    server.use(
+      http.get(`${API_BASE_URL}/api/cities`, () => HttpResponse.json(MOCK_CITIES)),
+      http.get(`${API_BASE_URL}/api/weather`, ({ request }) => {
+        const url = new URL(request.url);
+        const date = url.searchParams.get("date");
+        const isTokyo = url.searchParams.get("latitude") === String(tokyo?.latitude);
+
+        if (isTokyo && date === "2026-09-29") {
+          return HttpResponse.json(
+            {
+              error: {
+                code: "FORECAST_DATE_OUT_OF_RANGE",
+                message: "date must be between 2026-10-05 and 2026-10-10",
+                details: { min: "2026-10-05", max: "2026-10-10" },
+              },
+            },
+            { status: 400 },
+          );
+        }
+
+        const min = isTokyo ? "2026-10-05" : "2026-09-25";
+        const max = isTokyo ? "2026-10-10" : "2026-09-30";
+        const selectedDay = date
+          ? {
+              date,
+              condition: { code: 3, label: "Overcast" },
+              temperatureMax: 15,
+              temperatureMin: 5,
+              precipitationProbabilityMax: 20,
+              sunrise: `${date}T07:00`,
+              sunset: `${date}T19:00`,
+            }
+          : undefined;
+
+        return HttpResponse.json({
+          timezone: "UTC",
+          localDate: min,
+          allowedForecastDates: { min, max },
+          units: { temperature: "°C", windSpeed: "km/h", precipitationProbability: "%" },
+          current: {
+            observedAt: `${min}T12:00`,
+            temperature: 10,
+            feelsLike: 11,
+            humidity: 50,
+            windSpeed: 10,
+            isDay: true,
+            condition: { code: 0, label: "Clear" },
+          },
+          week: selectedDay ? [selectedDay] : [],
+          ...(selectedDay ? { selectedDay } : {}),
+        });
+      }),
+    );
+
+    const user = userEvent.setup();
+    render(<TravelPlannerPage />);
+
+    const datePicker = await screen.findByLabelText("See forecast for a specific day");
+    await user.type(datePicker, "2026-09-29");
+    expect(await screen.findByLabelText(/Forecast for/)).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "City" }), "tokyo");
+
+    // The invalid date is dropped silently — no error banner, and the
+    // selected-day card disappears since there's no longer a selected date.
+    await waitFor(() => {
+      expect(screen.getByLabelText("See forecast for a specific day")).toHaveValue("");
+    });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/Forecast for/)).not.toBeInTheDocument();
   });
 
   it("clears the location notice once the user manually picks a different city", async () => {

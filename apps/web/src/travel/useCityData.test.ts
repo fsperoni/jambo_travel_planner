@@ -124,4 +124,71 @@ describe("useCityData", () => {
     await waitFor(() => expect(result.current.weather?.timezone).toBe("recovered"));
     expect(result.current.error).toBeNull();
   });
+
+  it("passes the date through to the request and re-fetches when it changes", async () => {
+    server.use(
+      http.get(`${API_BASE_URL}/api/weather`, ({ request }) => {
+        const url = new URL(request.url);
+        const date = url.searchParams.get("date");
+        return HttpResponse.json(makeReport(date ?? "no-date"));
+      }),
+    );
+
+    const { result, rerender } = renderHook(
+      ({ date }: { date: string | null }) => useCityData(51.05, -114.07, date),
+      { initialProps: { date: null as string | null } },
+    );
+
+    await waitFor(() => expect(result.current.weather?.timezone).toBe("no-date"));
+
+    rerender({ date: "2026-09-29" });
+
+    await waitFor(() => expect(result.current.weather?.timezone).toBe("2026-09-29"));
+  });
+
+  it("exposes the error's code alongside its message", async () => {
+    server.use(
+      http.get(`${API_BASE_URL}/api/weather`, () =>
+        HttpResponse.json(
+          {
+            error: {
+              code: "FORECAST_DATE_OUT_OF_RANGE",
+              message: "date must be between 2026-09-27 and 2026-10-02",
+              details: { min: "2026-09-27", max: "2026-10-02" },
+            },
+          },
+          { status: 400 },
+        ),
+      ),
+    );
+
+    const { result } = renderHook(() => useCityData(51.05, -114.07, "2026-10-05"));
+
+    await waitFor(() => expect(result.current.errorCode).toBe("FORECAST_DATE_OUT_OF_RANGE"));
+    expect(result.current.error).toBe("date must be between 2026-09-27 and 2026-10-02");
+  });
+
+  it("clears the previous error code once a request succeeds", async () => {
+    let callCount = 0;
+    server.use(
+      http.get(`${API_BASE_URL}/api/weather`, () => {
+        callCount += 1;
+        if (callCount === 1) {
+          return HttpResponse.json(
+            { error: { code: "FORECAST_DATE_OUT_OF_RANGE", message: "out of range" } },
+            { status: 400 },
+          );
+        }
+        return HttpResponse.json(makeReport("recovered"));
+      }),
+    );
+
+    const { result } = renderHook(() => useCityData(51.05, -114.07, "2026-10-05"));
+    await waitFor(() => expect(result.current.errorCode).toBe("FORECAST_DATE_OUT_OF_RANGE"));
+
+    result.current.retry();
+
+    await waitFor(() => expect(result.current.weather?.timezone).toBe("recovered"));
+    expect(result.current.errorCode).toBeNull();
+  });
 });
