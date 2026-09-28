@@ -38,8 +38,20 @@ the city closest to your IP address.
 
 ## Live demo
 
-_Coming in Stage 11 (final deploy)._ Demo credentials are shared privately with the
-submission, not committed to this public repository.
+- **Frontend:** [jambo-travel-planner-web.vercel.app](https://jambo-travel-planner-web.vercel.app)
+- **Backend API:** [jambo-travel-planner.onrender.com](https://jambo-travel-planner.onrender.com) (not meant to be opened
+  directly — a browser hitting `/` there gets a 404 via the app's own JSON error envelope,
+  which is correct: every real route needs a Bearer token except `/health` and
+  `/api/auth/login`)
+
+Demo credentials are shared privately with the submission, not committed to this public
+repository.
+
+Both are on the platforms' default free-tier domains — no custom domain is used, which is
+fine here since the core (Stages 0–7) authenticates with a Bearer header rather than a cookie,
+so it isn't subject to third-party-cookie restrictions across the two different domains. See
+[Authentication](#authentication) and [Trade-offs](#trade-offs) for why that would matter more
+if the (currently out of scope) refresh-token cookie enhancement were added later.
 
 ## Tech stack
 
@@ -826,7 +838,68 @@ user action and a server rejection rather than only argued for in prose.
 
 ## Deployment architecture
 
-_Coming in Stage 3.5 (deployment spike) and finalized in Stage 11._
+```mermaid
+flowchart LR
+  B["Browser"] -->|"HTTPS"| V["Vercel: static React build"]
+  V -->|"Authorization: Bearer JWT"| R["Render: Express API"]
+  R --> N[("Neon: PostgreSQL")]
+  R --> OM["Open-Meteo"]
+  R --> WK["Wikipedia"]
+  R --> IP["ipapi.co"]
+```
+
+Three free tiers, each on its own default domain (`*.vercel.app`, `*.onrender.com`,
+`*.neon.tech`) — no custom domain, which is a deliberate non-decision rather than an oversight:
+the core (Stages 0–7) authenticates with a Bearer header, not a cookie, so it isn't subject to
+the third-party-cookie restrictions that would make same-site custom subdomains matter (see
+[Authentication](#authentication)). A custom domain remains an option to revisit only if the
+optional refresh-token cookie enhancement is ever added.
+
+**Build-time vs. runtime environment variables — a real distinction, not a technicality.**
+Vite bakes `VITE_API_BASE_URL` into the built JS at _build_ time (`import.meta.env.*` is
+replaced with a literal value during `vite build`), unlike the backend's env vars, which
+`config/env.ts` reads at every process _start_. Changing the Vercel project's env var alone
+doesn't change what an already-built bundle points at — it takes an actual rebuild. This was a
+real gotcha during setup, not a theoretical one: the first Vercel deploy had
+`VITE_API_BASE_URL` pointing at the wrong URL, and the fix required a full redeploy, not just
+an env var edit — confirmed by grepping the actual served JS bundle for the literal URL string
+before and after.
+
+**Render's Node buildpack skips `devDependencies` under `NODE_ENV=production`**, which is also
+the value this app's env schema expects for the deployed environment (`config/env.ts`,
+`NODE_ENV: "development" | "test" | "production"`). Since the build step (`tsc`) needs
+`typescript`/`@types/node` — both devDependencies — to compile, the Build Command explicitly
+overrides that with `npm install --include=dev`, so the build gets what it needs while the
+running process still reports `NODE_ENV=production` correctly.
+
+- **Build Command:** `npm install --include=dev && npm run build -w @jambo/api`
+- **Start Command:** `npm run start -w @jambo/api`
+
+**`TRUST_PROXY_HOPS=1` in production, verified against the real deployment, not just locally.**
+Render sits exactly one reverse proxy in front of this app, matching the hop count the
+[IP-based geolocation](#ip-based-geolocation) section's empirical verification was built for.
+Confirmed for real once deployed: a request through Render's real proxy chain resolves to
+`source: "default", reason: "lookup-failed"` from `/api/location` (a real external IP correctly
+recognized as _not_ loopback, whose provider lookup then failed gracefully) — not
+`reason: "local-development"`, which is what a misconfigured hop count that collapsed every
+request to an internal address would have produced instead.
+
+**Environment variables actually set on Render** (see [Environment variables](#environment-variables)
+for what each one does): `NODE_ENV=production`, `DATABASE_URL` (Neon's pooled connection
+string), `JWT_SECRET` (a real random secret, generated once for this deployment — never the
+local-dev one), `ACCESS_TOKEN_TTL_SECONDS=3600` (not the 15-minute dev default — see
+[Trade-offs](#trade-offs) for why, now that the refresh-token enhancement is out of scope for
+this submission), `TRUST_PROXY_HOPS=1`, `DEFAULT_CITY_ID=calgary`, `WIKIPEDIA_USER_AGENT` (set
+to a real, reachable contact — this repository's own GitHub URL — rather than a personal email,
+continuing the Stage 5 decision), and `CORS_ORIGINS` (the Vercel deployment's exact origin, no
+trailing slash — a trailing slash or an accidentally-blanked value both silently reject every
+origin, including the correct one, which is exactly what happened once during setup and was
+caught by comparing the response to a deliberately wrong `Origin` header for contrast).
+
+**Neon migrations and seeding** were run once, directly against the production `DATABASE_URL`,
+the same `npm run db:migrate -w @jambo/api` / `npm run db:seed -w @jambo/api` commands used
+locally — no separate production migration tooling, since `node-pg-migrate` already works
+against any reachable PostgreSQL connection string.
 
 ## AI usage
 
