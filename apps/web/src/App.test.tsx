@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { App } from "./App";
 import { renderWithProviders } from "./test/render-with-providers";
-import { VALID_CREDENTIALS } from "./test/msw/handlers";
+import { VALID_CREDENTIALS } from "./test/fixtures";
 
 // An integration-style test of the whole auth wiring: AuthProvider,
 // http.ts, LoginPage, and App's own "which view to show" logic, exercised
@@ -27,9 +27,9 @@ describe("App", () => {
     });
     expect(screen.queryByRole("form", { name: "Sign in" })).not.toBeInTheDocument();
 
-    // Continues past login into Stage 4's travel planner: the city list
-    // loads, a default city is selected, and its weather renders — all
-    // without any further user action.
+    // Continues past login into the travel planner: the city list loads, a
+    // default city is selected, and its weather renders — all without any
+    // further user action.
     expect(await screen.findByRole("combobox", { name: "City" })).toBeInTheDocument();
     expect(await screen.findByLabelText("Current weather")).toBeInTheDocument();
     expect(screen.getByLabelText("7-day forecast")).toBeInTheDocument();

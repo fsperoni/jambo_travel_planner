@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { ApiError } from "../api/http";
+import { toErrorMessage } from "../api/http";
 import { useDelayedFlag } from "../lib/useDelayedFlag";
 import { useAuth } from "./AuthContext";
 import styles from "./LoginPage.module.css";
@@ -30,9 +30,7 @@ export function LoginPage() {
       // App.tsx swaps this page out for the authenticated view — there's
       // nothing further to do here.
     } catch (err) {
-      setErrorMessage(
-        err instanceof ApiError ? err.message : "Something went wrong. Please try again.",
-      );
+      setErrorMessage(toErrorMessage(err));
     } finally {
       setIsPending(false);
     }

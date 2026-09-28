@@ -3,18 +3,17 @@ import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
 import type { DetectedLocation } from "../api/types";
-import { MOCK_CITIES } from "../test/msw/handlers";
+import { API_BASE_URL, GENERIC_ERROR_MESSAGE } from "../api/http";
+import { MOCK_CITIES, buildWeatherReport } from "../test/fixtures";
 import { server } from "../test/msw/server";
 import { TravelPlannerPage } from "./TravelPlannerPage";
 
-const API_BASE_URL = "http://localhost:3000";
-
+// A thin, file-local convenience over the shared buildWeatherReport: most
+// tests below only care about a specific temperature/condition (to tell
+// two cities' responses apart on screen), not the rest of the report.
 function reportWith(temperature: number, conditionLabel: string) {
-  return {
+  return buildWeatherReport({
     timezone: "UTC",
-    localDate: "2026-09-25",
-    allowedForecastDates: { min: "2026-09-25", max: "2026-09-30" },
-    units: { temperature: "°C", windSpeed: "km/h", precipitationProbability: "%" },
     current: {
       observedAt: "2026-09-25T20:30",
       temperature,
@@ -27,8 +26,7 @@ function reportWith(temperature: number, conditionLabel: string) {
       isDay: true,
       condition: { code: 0, label: conditionLabel },
     },
-    week: [],
-  };
+  });
 }
 
 describe("TravelPlannerPage", () => {
@@ -48,8 +46,8 @@ describe("TravelPlannerPage", () => {
     const user = userEvent.setup();
     render(<TravelPlannerPage />);
 
-    // Defaults to the first city in the catalogue (Calgary) until Stage 6
-    // adds real IP-based detection.
+    // Defaults to the first city in the catalogue (Calgary) when location
+    // detection reports "local-development" — see MOCK_LOCATION.
     await waitFor(() => {
       expect(screen.getByRole("combobox", { name: "City" })).toHaveValue(calgary?.id);
     });
@@ -70,7 +68,7 @@ describe("TravelPlannerPage", () => {
     server.use(
       http.get(`${API_BASE_URL}/api/cities`, () =>
         HttpResponse.json(
-          { error: { code: "INTERNAL_ERROR", message: "Something went wrong. Please try again." } },
+          { error: { code: "INTERNAL_ERROR", message: GENERIC_ERROR_MESSAGE } },
           { status: 500 },
         ),
       ),
@@ -78,9 +76,7 @@ describe("TravelPlannerPage", () => {
 
     render(<TravelPlannerPage />);
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      "Something went wrong. Please try again.",
-    );
+    expect(await screen.findByRole("alert")).toHaveTextContent(GENERIC_ERROR_MESSAGE);
     expect(screen.getByRole("button", { name: "Try again" })).toBeInTheDocument();
   });
 
@@ -204,20 +200,19 @@ describe("TravelPlannerPage", () => {
         const url = new URL(request.url);
         const date = url.searchParams.get("date");
         return HttpResponse.json({
-          timezone: "UTC",
-          localDate: "2026-09-25",
-          allowedForecastDates: { min: "2026-09-25", max: "2026-09-30" },
-          units: { temperature: "°C", windSpeed: "km/h", precipitationProbability: "%" },
-          current: {
-            observedAt: "2026-09-25T12:00",
-            temperature: 10,
-            feelsLike: 11,
-            humidity: 50,
-            windSpeed: 10,
-            isDay: true,
-            condition: { code: 0, label: "Clear" },
-          },
-          week: [selectedDay],
+          ...buildWeatherReport({
+            timezone: "UTC",
+            current: {
+              observedAt: "2026-09-25T12:00",
+              temperature: 10,
+              feelsLike: 11,
+              humidity: 50,
+              windSpeed: 10,
+              isDay: true,
+              condition: { code: 0, label: "Clear" },
+            },
+            week: [selectedDay],
+          }),
           ...(date === selectedDay.date ? { selectedDay } : {}),
         });
       }),

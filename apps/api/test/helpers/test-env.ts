@@ -1,4 +1,5 @@
 import type { Env } from "../../src/config/env.js";
+import { TEST_JWT_SECRET } from "./fixtures.js";
 
 /**
  * A minimal, valid Env object for tests that build createApp() directly.
@@ -12,7 +13,7 @@ export function createTestEnv(overrides: Partial<Env> = {}): Env {
     PORT: 3000,
     CORS_ORIGINS: ["http://localhost:5173"],
     DATABASE_URL: "postgres://test:test@localhost:5432/test",
-    JWT_SECRET: "test-jwt-secret-at-least-32-characters-long",
+    JWT_SECRET: TEST_JWT_SECRET,
     ACCESS_TOKEN_TTL_SECONDS: 900,
     // ".invalid" is reserved by RFC 2606 to never resolve — a loud, obvious
     // failure for any test that forgets to override this with a stub

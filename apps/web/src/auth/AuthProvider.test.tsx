@@ -3,9 +3,9 @@ import userEvent from "@testing-library/user-event";
 import { http, HttpResponse } from "msw";
 import { useState } from "react";
 import { describe, expect, it } from "vitest";
-import { apiFetch } from "../api/http";
+import { API_BASE_URL, apiFetch } from "../api/http";
 import { server } from "../test/msw/server";
-import { VALID_CREDENTIALS } from "../test/msw/handlers";
+import { INVALID_CREDENTIALS, VALID_CREDENTIALS } from "../test/fixtures";
 import { useAuth } from "./AuthContext";
 import { AuthProvider } from "./AuthProvider";
 
@@ -38,7 +38,7 @@ function AuthHarness() {
       <button
         onClick={() => {
           setLoginError(null);
-          login("wrong@example.com", "wrong-password").catch((err: unknown) => {
+          login(INVALID_CREDENTIALS.email, INVALID_CREDENTIALS.password).catch((err: unknown) => {
             setLoginError(err instanceof Error ? err.message : "unknown error");
           });
         }}
@@ -108,7 +108,7 @@ describe("AuthProvider", () => {
 
   it("clears the session and flags it as expired when a protected call comes back 401", async () => {
     server.use(
-      http.get("http://localhost:3000/protected", () =>
+      http.get(`${API_BASE_URL}/protected`, () =>
         HttpResponse.json(
           { error: { code: "UNAUTHORIZED", message: "Invalid or expired access token" } },
           { status: 401 },

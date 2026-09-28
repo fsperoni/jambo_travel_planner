@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ApiError } from "../api/http";
+import { toErrorMessage } from "../api/http";
 import { getCities, getLocation } from "../api/travel.api";
 import type { City, DetectedLocation } from "../api/types";
 import { ErrorState } from "../components/ErrorState";
@@ -49,9 +49,7 @@ export function TravelPlannerPage() {
       })
       .catch((err: unknown) => {
         if (cancelled) return;
-        setCitiesError(
-          err instanceof ApiError ? err.message : "Something went wrong. Please try again.",
-        );
+        setCitiesError(toErrorMessage(err));
       });
 
     return () => {

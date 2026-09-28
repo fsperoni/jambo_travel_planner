@@ -6,11 +6,12 @@ import rateLimit from "express-rate-limit";
  * API-wide limiter was deliberately left out.
  *
  * Correctness here depends on `req.ip` reflecting the real client, which
- * depends on Express's `trust proxy` setting matching the actual proxy
- * chain in front of the app. That's configured once verified against the
- * real hosting setup (Stage 6), not guessed at here — until then, every
- * request behind a proxy looks like it comes from the same IP, which only
- * makes this limiter overly strict (shared across all users), not unsafe.
+ * depends on Express's `trust proxy` setting (config/env.ts's
+ * TRUST_PROXY_HOPS) matching the actual proxy chain in front of the app —
+ * confirmed against the real Render deployment (hops=1), not just assumed.
+ * If that number were ever wrong, this limiter would fail safe: every
+ * request behind the proxy would look like it comes from the same IP,
+ * making it overly strict (shared across all users) rather than unsafe.
  */
 export const loginRateLimit = rateLimit({
   windowMs: 15 * 60 * 1000,

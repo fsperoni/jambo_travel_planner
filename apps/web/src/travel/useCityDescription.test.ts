@@ -1,10 +1,10 @@
 import { renderHook, waitFor } from "@testing-library/react";
 import { delay, http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
+import { API_BASE_URL } from "../api/http";
 import { server } from "../test/msw/server";
 import { useCityDescription } from "./useCityDescription";
 
-const API_BASE_URL = "http://localhost:3000";
 const SLOW_TITLE = "Slow_City";
 const FAST_TITLE = "Fast_City";
 

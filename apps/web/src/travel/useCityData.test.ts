@@ -1,30 +1,19 @@
 import { renderHook, waitFor } from "@testing-library/react";
 import { delay, http, HttpResponse } from "msw";
 import { describe, expect, it } from "vitest";
+import { API_BASE_URL } from "../api/http";
+import { buildWeatherReport } from "../test/fixtures";
 import { server } from "../test/msw/server";
 import { useCityData } from "./useCityData";
 
-const API_BASE_URL = "http://localhost:3000";
 const SLOW_CITY = { latitude: 1, longitude: 1 };
 const FAST_CITY = { latitude: 2, longitude: 2 };
 
+// `marker` stands in for whatever field a test needs to tell two responses
+// apart (which city responded, which date was requested, etc.) — timezone
+// is a convenient string field for that, not meaningful here otherwise.
 function makeReport(marker: string) {
-  return {
-    timezone: marker,
-    localDate: "2026-09-25",
-    allowedForecastDates: { min: "2026-09-25", max: "2026-09-30" },
-    units: { temperature: "°C", windSpeed: "km/h", precipitationProbability: "%" },
-    current: {
-      observedAt: "2026-09-25T20:30",
-      temperature: 10,
-      feelsLike: 8,
-      humidity: 50,
-      windSpeed: 10,
-      isDay: true,
-      condition: { code: 0, label: "Clear sky" },
-    },
-    week: [],
-  };
+  return buildWeatherReport({ timezone: marker });
 }
 
 describe("useCityData", () => {

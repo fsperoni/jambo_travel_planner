@@ -37,6 +37,13 @@ export function createLocationService({
   ipGeolocationClient,
   defaultCity,
 }: LocationServiceDependencies): LocationService {
+  // Every fallback path returns the same shape, differing only in `reason`
+  // — a small helper instead of repeating the object literal at each of
+  // the three call sites below.
+  function fallback(reason: NonNullable<DetectedLocation["reason"]>): DetectedLocation {
+    return { city: defaultCity, source: "default", reason };
+  }
+
   return {
     async detectLocation(rawIp) {
       // Express types req.ip as possibly undefined (the underlying
@@ -45,16 +52,16 @@ export function createLocationService({
       // provider that couldn't produce a usable result, since there's
       // nothing to geolocate either way.
       if (rawIp === undefined) {
-        return { city: defaultCity, source: "default", reason: "lookup-failed" };
+        return fallback("lookup-failed");
       }
 
       const ip = normalizeIp(rawIp);
 
       if (isLoopback(ip)) {
-        return { city: defaultCity, source: "default", reason: "local-development" };
+        return fallback("local-development");
       }
 
-      let location;
+      let location: Awaited<ReturnType<IpGeolocationClient["lookup"]>>;
       try {
         location = await ipGeolocationClient.lookup(ip);
       } catch (err) {
@@ -67,11 +74,11 @@ export function createLocationService({
           "IP geolocation lookup failed:",
           err instanceof Error ? err.message : "unknown error",
         );
-        return { city: defaultCity, source: "default", reason: "lookup-failed" };
+        return fallback("lookup-failed");
       }
 
       if (!location) {
-        return { city: defaultCity, source: "default", reason: "lookup-failed" };
+        return fallback("lookup-failed");
       }
 
       const matched = findCityByNameAndCountry(location.city, location.countryCode);

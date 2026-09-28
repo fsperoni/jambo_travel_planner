@@ -3,10 +3,10 @@ import { findCityById } from "../domain/city-catalogue.js";
 
 // Fail fast: if required configuration is missing or malformed, the process
 // should refuse to start rather than fail confusingly on whichever request
-// happens to need the missing value first. Built up incrementally — each
-// stage adds only the variables it actually consumes (e.g. JWT_SECRET
-// arrives with Stage 2's auth, DATABASE_URL with Stage 2's persistence)
-// rather than pre-declaring config for features that don't exist yet.
+// happens to need the missing value first. Each variable here is one the
+// app actually reads somewhere (see the README's environment-variables
+// table for what each one does), not speculative config for a feature that
+// doesn't exist.
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().positive().default(3000),
@@ -78,7 +78,8 @@ const envSchema = z.object({
   // empirically, not assumed: with hops=1, Express trusts the proxy's own
   // observed address and returns the *last* entry of X-Forwarded-For,
   // correctly ignoring anything a client prepends to that header. Verified
-  // for the real deployment in Stage 3.5/11, not just locally.
+  // against the real Render deployment, not just locally — see the
+  // README's deployment architecture section.
   TRUST_PROXY_HOPS: z.coerce.number().int().min(0).default(0),
 });
 

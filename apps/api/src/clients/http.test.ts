@@ -115,4 +115,22 @@ describe("fetchJson", () => {
       code: "UPSTREAM_ERROR",
     });
   });
+
+  it("throws a 502 UpstreamError (not an unhandled SyntaxError) when a 2xx response body isn't valid JSON", async () => {
+    // A real failure mode: an upstream can return 200 with an HTML error
+    // page or empty body instead of JSON (a misconfigured proxy, a CDN
+    // error page). Without this, `response.json()`'s SyntaxError would
+    // propagate uncaught past this function, and the central error handler
+    // would map it to a generic 500 instead of the 502 every other upstream
+    // failure in this file produces.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response("<html>not json</html>", { status: 200 })),
+    );
+
+    await expect(fetchJson("https://example.com/data", { timeoutMs: 1000 })).rejects.toMatchObject({
+      status: 502,
+      code: "UPSTREAM_ERROR",
+    });
+  });
 });

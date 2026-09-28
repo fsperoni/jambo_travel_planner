@@ -1,5 +1,11 @@
 import { UpstreamError } from "../errors/app-error.js";
 
+// Shared by every upstream client (Open-Meteo, Wikipedia, ipapi.co) — they're
+// all comfortably fast in practice, and none has shown a reason to need a
+// different budget from the others, so one constant avoids three copies of
+// the same number silently drifting apart.
+export const UPSTREAM_TIMEOUT_MS = 5000;
+
 export interface FetchJsonOptions {
   timeoutMs: number;
   headers?: Record<string, string>;
@@ -64,5 +70,14 @@ export async function fetchJson<T>(
     throw new UpstreamError(502, `Upstream ${host} responded with status ${response.status}`);
   }
 
-  return response.json() as Promise<T>;
+  try {
+    return (await response.json()) as T;
+  } catch {
+    // A 2xx status doesn't guarantee a JSON body — an upstream can return
+    // an HTML error page or an empty body through a misconfigured proxy or
+    // CDN. Without this, `response.json()`'s SyntaxError would propagate
+    // uncaught, and the central error handler would map it to a generic
+    // 500 instead of the 502 every other upstream failure here produces.
+    throw new UpstreamError(502, `Upstream ${host} returned an invalid JSON body`);
+  }
 }

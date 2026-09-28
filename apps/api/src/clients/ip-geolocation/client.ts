@@ -1,11 +1,6 @@
-import { fetchJson } from "../http.js";
+import { fetchJson, UPSTREAM_TIMEOUT_MS } from "../http.js";
 import { mapIpApiResponse, type IpLocation } from "./mapper.js";
 import type { IpApiResponse } from "./raw-types.js";
-
-// ipapi.co is generally fast; matches the timeout budget used for the
-// other two upstreams rather than inventing a different number without a
-// reason to.
-const REQUEST_TIMEOUT_MS = 5000;
 
 export interface IpGeolocationClient {
   lookup(ip: string): Promise<IpLocation | null>;
@@ -27,7 +22,7 @@ export function createIpGeolocationClient(baseUrl: string): IpGeolocationClient 
       // location.service.ts exactly like a mapped null: both fall back to
       // the default city, just with the same "lookup-failed" reason.
       const raw = await fetchJson<IpApiResponse>(url.toString(), {
-        timeoutMs: REQUEST_TIMEOUT_MS,
+        timeoutMs: UPSTREAM_TIMEOUT_MS,
       });
 
       return mapIpApiResponse(raw);

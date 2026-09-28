@@ -5,9 +5,8 @@ import { createApp } from "../src/app.js";
 import { ForecastDateOutOfRangeError, UpstreamError } from "../src/errors/app-error.js";
 import type { City } from "../src/domain/city-catalogue.js";
 import type { DetectedLocation } from "../src/services/location.service.js";
-import type { CityDescription } from "../src/services/description.service.js";
+import type { CityDescription } from "../src/types/city-description.js";
 import { createTokenService } from "../src/services/token.service.js";
-import type { WeatherReport } from "../src/services/weather.service.js";
 import {
   createFakeAuthService,
   createFakeDescriptionService,
@@ -15,6 +14,7 @@ import {
   createFakeWeatherService,
 } from "./helpers/fakes.js";
 import { createTestEnv } from "./helpers/test-env.js";
+import { TEST_USER, buildWeatherReport } from "./helpers/fixtures.js";
 
 // Neither /api/cities, /api/weather, /api/city-description, nor
 // /api/location touches PostgreSQL, so — unlike auth.test.ts — this file
@@ -24,7 +24,7 @@ import { createTestEnv } from "./helpers/test-env.js";
 // validation, and response wiring.
 const env = createTestEnv();
 const tokenService = createTokenService(env.JWT_SECRET, env.ACCESS_TOKEN_TTL_SECONDS);
-const validToken = tokenService.signAccessToken({ sub: "user-1", email: "person@example.com" });
+const validToken = tokenService.signAccessToken({ sub: TEST_USER.id, email: TEST_USER.email });
 
 function buildApp({
   weatherService = createFakeWeatherService(),
@@ -47,23 +47,13 @@ function buildApp({
   });
 }
 
-function makeReport(): WeatherReport {
-  return {
-    timezone: "America/Edmonton",
-    localDate: "2026-09-25",
-    allowedForecastDates: { min: "2026-09-25", max: "2026-09-30" },
-    units: { temperature: "°C", windSpeed: "km/h", precipitationProbability: "%" },
-    current: {
-      observedAt: "2026-09-25T20:30",
-      temperature: 13.4,
-      feelsLike: 8.9,
-      humidity: 40,
-      windSpeed: 16.1,
-      isDay: false,
-      condition: { code: 2, label: "Partly cloudy" },
-    },
-    week: [],
-  };
+/** GET `path` against `app` (default: a fresh buildApp()) with a valid
+ *  Bearer token already attached — nearly every test below needs one, and
+ *  a bare `request(app).get(path)` remains available for the handful of
+ *  "returns 401 with no Authorization header" tests that specifically
+ *  don't want it. */
+function authedGet(path: string, app: Express = buildApp()) {
+  return request(app).get(path).set("Authorization", `Bearer ${validToken}`);
 }
 
 describe("GET /api/cities", () => {
@@ -81,9 +71,7 @@ describe("GET /api/cities", () => {
   });
 
   it("returns the city catalogue with a valid token", async () => {
-    const res = await request(buildApp())
-      .get("/api/cities")
-      .set("Authorization", `Bearer ${validToken}`);
+    const res = await authedGet("/api/cities");
 
     expect(res.status).toBe(200);
     expect(Array.isArray(res.body)).toBe(true);
@@ -106,32 +94,27 @@ describe("GET /api/weather", () => {
   });
 
   it("returns 400 when coordinates are missing", async () => {
-    const res = await request(buildApp())
-      .get("/api/weather")
-      .set("Authorization", `Bearer ${validToken}`);
+    const res = await authedGet("/api/weather");
 
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe("VALIDATION_ERROR");
   });
 
   it("returns 400 for an out-of-range latitude", async () => {
-    const res = await request(buildApp())
-      .get("/api/weather?latitude=999&longitude=0")
-      .set("Authorization", `Bearer ${validToken}`);
+    const res = await authedGet("/api/weather?latitude=999&longitude=0");
 
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe("VALIDATION_ERROR");
   });
 
   it("returns the weather service's report for valid coordinates", async () => {
-    const report = makeReport();
+    const report = buildWeatherReport();
     const getWeatherReport = vi.fn().mockResolvedValue(report);
 
-    const res = await request(
+    const res = await authedGet(
+      "/api/weather?latitude=51.0447&longitude=-114.0719",
       buildApp({ weatherService: createFakeWeatherService({ getWeatherReport }) }),
-    )
-      .get("/api/weather?latitude=51.0447&longitude=-114.0719")
-      .set("Authorization", `Bearer ${validToken}`);
+    );
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual(report);
@@ -145,11 +128,10 @@ describe("GET /api/weather", () => {
         new UpstreamError(502, "Upstream api.open-meteo.com responded with status 503"),
       );
 
-    const res = await request(
+    const res = await authedGet(
+      "/api/weather?latitude=51.0447&longitude=-114.0719",
       buildApp({ weatherService: createFakeWeatherService({ getWeatherReport }) }),
-    )
-      .get("/api/weather?latitude=51.0447&longitude=-114.0719")
-      .set("Authorization", `Bearer ${validToken}`);
+    );
 
     expect(res.status).toBe(502);
     expect(res.body.error.code).toBe("UPSTREAM_ERROR");
@@ -163,43 +145,41 @@ describe("GET /api/weather", () => {
       .fn()
       .mockRejectedValue(new UpstreamError(504, "Upstream api.open-meteo.com timed out"));
 
-    const res = await request(
+    const res = await authedGet(
+      "/api/weather?latitude=51.0447&longitude=-114.0719",
       buildApp({ weatherService: createFakeWeatherService({ getWeatherReport }) }),
-    )
-      .get("/api/weather?latitude=51.0447&longitude=-114.0719")
-      .set("Authorization", `Bearer ${validToken}`);
+    );
 
     expect(res.status).toBe(504);
     expect(res.body.error.code).toBe("UPSTREAM_ERROR");
   });
 
   it("passes a valid date through to the weather service", async () => {
-    const report = makeReport();
+    const report = buildWeatherReport();
     const getWeatherReport = vi.fn().mockResolvedValue(report);
 
-    const res = await request(
+    const res = await authedGet(
+      "/api/weather?latitude=51.0447&longitude=-114.0719&date=2026-09-27",
       buildApp({ weatherService: createFakeWeatherService({ getWeatherReport }) }),
-    )
-      .get("/api/weather?latitude=51.0447&longitude=-114.0719&date=2026-09-27")
-      .set("Authorization", `Bearer ${validToken}`);
+    );
 
     expect(res.status).toBe(200);
     expect(getWeatherReport).toHaveBeenCalledWith(51.0447, -114.0719, "2026-09-27");
   });
 
   it("returns 400 for a date that isn't in YYYY-MM-DD format", async () => {
-    const res = await request(buildApp())
-      .get("/api/weather?latitude=51.0447&longitude=-114.0719&date=09/27/2026")
-      .set("Authorization", `Bearer ${validToken}`);
+    const res = await authedGet(
+      "/api/weather?latitude=51.0447&longitude=-114.0719&date=09/27/2026",
+    );
 
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe("VALIDATION_ERROR");
   });
 
   it("returns 400 for a date that doesn't exist on the calendar", async () => {
-    const res = await request(buildApp())
-      .get("/api/weather?latitude=51.0447&longitude=-114.0719&date=2026-02-30")
-      .set("Authorization", `Bearer ${validToken}`);
+    const res = await authedGet(
+      "/api/weather?latitude=51.0447&longitude=-114.0719&date=2026-02-30",
+    );
 
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe("VALIDATION_ERROR");
@@ -210,11 +190,10 @@ describe("GET /api/weather", () => {
       .fn()
       .mockRejectedValue(new ForecastDateOutOfRangeError({ min: "2026-09-27", max: "2026-10-02" }));
 
-    const res = await request(
+    const res = await authedGet(
+      "/api/weather?latitude=51.0447&longitude=-114.0719&date=2026-10-05",
       buildApp({ weatherService: createFakeWeatherService({ getWeatherReport }) }),
-    )
-      .get("/api/weather?latitude=51.0447&longitude=-114.0719&date=2026-10-05")
-      .set("Authorization", `Bearer ${validToken}`);
+    );
 
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe("FORECAST_DATE_OUT_OF_RANGE");
@@ -229,9 +208,7 @@ describe("GET /api/city-description", () => {
   });
 
   it("returns 400 when title is missing", async () => {
-    const res = await request(buildApp())
-      .get("/api/city-description")
-      .set("Authorization", `Bearer ${validToken}`);
+    const res = await authedGet("/api/city-description");
 
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe("VALIDATION_ERROR");
@@ -245,11 +222,10 @@ describe("GET /api/city-description", () => {
     };
     const getCityDescription = vi.fn().mockResolvedValue(cityDescription);
 
-    const res = await request(
+    const res = await authedGet(
+      "/api/city-description?title=Calgary",
       buildApp({ descriptionService: createFakeDescriptionService({ getCityDescription }) }),
-    )
-      .get("/api/city-description?title=Calgary")
-      .set("Authorization", `Bearer ${validToken}`);
+    );
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual(cityDescription);
@@ -261,11 +237,10 @@ describe("GET /api/city-description", () => {
       .fn()
       .mockResolvedValue({ title: "NotARealPlace", description: null, sourceUrl: null });
 
-    const res = await request(
+    const res = await authedGet(
+      "/api/city-description?title=NotARealPlace",
       buildApp({ descriptionService: createFakeDescriptionService({ getCityDescription }) }),
-    )
-      .get("/api/city-description?title=NotARealPlace")
-      .set("Authorization", `Bearer ${validToken}`);
+    );
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ title: "NotARealPlace", description: null, sourceUrl: null });
@@ -278,11 +253,10 @@ describe("GET /api/city-description", () => {
         new UpstreamError(502, "Upstream en.wikipedia.org responded with status 503"),
       );
 
-    const res = await request(
+    const res = await authedGet(
+      "/api/city-description?title=Calgary",
       buildApp({ descriptionService: createFakeDescriptionService({ getCityDescription }) }),
-    )
-      .get("/api/city-description?title=Calgary")
-      .set("Authorization", `Bearer ${validToken}`);
+    );
 
     expect(res.status).toBe(502);
     expect(res.body.error.code).toBe("UPSTREAM_ERROR");
@@ -293,11 +267,10 @@ describe("GET /api/city-description", () => {
       .fn()
       .mockResolvedValue({ title: "São Paulo", description: "A city in Brazil.", sourceUrl: null });
 
-    const res = await request(
+    const res = await authedGet(
+      `/api/city-description?title=${encodeURIComponent("São Paulo")}`,
       buildApp({ descriptionService: createFakeDescriptionService({ getCityDescription }) }),
-    )
-      .get(`/api/city-description?title=${encodeURIComponent("São Paulo")}`)
-      .set("Authorization", `Bearer ${validToken}`);
+    );
 
     expect(res.status).toBe(200);
     expect(getCityDescription).toHaveBeenCalledWith("São Paulo");
@@ -335,11 +308,10 @@ describe("GET /api/location", () => {
     };
     const detectLocation = vi.fn().mockResolvedValue(detected);
 
-    const res = await request(
+    const res = await authedGet(
+      "/api/location",
       buildApp({ locationService: createFakeLocationService({ detectLocation }) }),
-    )
-      .get("/api/location")
-      .set("Authorization", `Bearer ${validToken}`);
+    );
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual(detected);
@@ -353,11 +325,10 @@ describe("GET /api/location", () => {
     };
     const detectLocation = vi.fn().mockResolvedValue(detected);
 
-    const res = await request(
+    const res = await authedGet(
+      "/api/location",
       buildApp({ locationService: createFakeLocationService({ detectLocation }) }),
-    )
-      .get("/api/location")
-      .set("Authorization", `Bearer ${validToken}`);
+    );
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual(detected);
@@ -373,15 +344,13 @@ describe("GET /api/location", () => {
       .fn()
       .mockResolvedValue({ city: calgary, source: "default", reason: "lookup-failed" });
 
-    await request(
+    await authedGet(
+      "/api/location",
       buildApp({
         locationService: createFakeLocationService({ detectLocation }),
         trustProxyHops: 1,
       }),
-    )
-      .get("/api/location")
-      .set("Authorization", `Bearer ${validToken}`)
-      .set("X-Forwarded-For", "9.9.9.9, 203.0.113.5");
+    ).set("X-Forwarded-For", "9.9.9.9, 203.0.113.5");
 
     expect(detectLocation).toHaveBeenCalledWith("203.0.113.5");
   });
@@ -391,15 +360,13 @@ describe("GET /api/location", () => {
       .fn()
       .mockResolvedValue({ city: calgary, source: "default", reason: "lookup-failed" });
 
-    await request(
+    await authedGet(
+      "/api/location",
       buildApp({
         locationService: createFakeLocationService({ detectLocation }),
         trustProxyHops: 0,
       }),
-    )
-      .get("/api/location")
-      .set("Authorization", `Bearer ${validToken}`)
-      .set("X-Forwarded-For", "9.9.9.9");
+    ).set("X-Forwarded-For", "9.9.9.9");
 
     // Supertest connects over a real loopback socket, so with X-Forwarded-For
     // ignored, req.ip is the test runner's own loopback address — never the

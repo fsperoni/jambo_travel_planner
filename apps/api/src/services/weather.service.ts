@@ -1,54 +1,6 @@
-import type { WeatherCondition } from "../domain/weather-codes.js";
 import type { OpenMeteoClient } from "../clients/open-meteo/client.js";
 import { ForecastDateOutOfRangeError } from "../errors/app-error.js";
-
-export interface CurrentWeather {
-  /** ISO local datetime (e.g. "2026-09-25T20:30"), in the city's own time
-   *  zone — deliberately not converted to UTC; see the README's timezone
-   *  section (Stage 7) for why local strings are kept as-is end to end. */
-  observedAt: string;
-  temperature: number;
-  feelsLike: number;
-  humidity: number;
-  windSpeed: number;
-  isDay: boolean;
-  condition: WeatherCondition;
-}
-
-export interface DailyForecast {
-  /** ISO calendar date, e.g. "2026-09-25". */
-  date: string;
-  condition: WeatherCondition;
-  temperatureMax: number;
-  temperatureMin: number;
-  precipitationProbabilityMax: number;
-  sunrise: string;
-  sunset: string;
-}
-
-export interface WeatherReport {
-  /** IANA time zone name for the requested coordinates, e.g. "America/Edmonton". */
-  timezone: string;
-  /** The city-local calendar date "today" — i.e. `week[0].date`. */
-  localDate: string;
-  /** The inclusive range of dates Stage 7's forecast-date picker may
-   *  request, computed from the same 7-day response rather than derived
-   *  from the server's own clock — see README (Stage 7) once that lands. */
-  allowedForecastDates: { min: string; max: string };
-  units: {
-    temperature: string;
-    windSpeed: string;
-    precipitationProbability: string;
-  };
-  current: CurrentWeather;
-  week: DailyForecast[];
-  /** The `week` entry matching a requested `date`, pulled out for
-   *  convenience — present only when the caller asked for a specific
-   *  date. Absent (not `null`) when no date was requested, so the
-   *  frontend can tell "no date picked" apart from "picked a date" with a
-   *  plain `if (report.selectedDay)` rather than a three-state field. */
-  selectedDay?: DailyForecast;
-}
+import type { WeatherReport } from "../types/weather-report.js";
 
 export interface WeatherService {
   getWeatherReport(latitude: number, longitude: number, date?: string): Promise<WeatherReport>;

@@ -1,6 +1,8 @@
+import { vi } from "vitest";
 import type { AuthService } from "../../src/services/auth.service.js";
 import type { DescriptionService } from "../../src/services/description.service.js";
 import type { LocationService } from "../../src/services/location.service.js";
+import type { TokenService } from "../../src/services/token.service.js";
 import type { WeatherService } from "../../src/services/weather.service.js";
 
 /**
@@ -54,6 +56,22 @@ export function createFakeLocationService(
     detectLocation: () => {
       throw new Error("createFakeLocationService: detectLocation() was not stubbed for this test");
     },
+    ...overrides,
+  };
+}
+
+/**
+ * A different shape from the other fakes in this file: those model a real
+ * service tests never call without stubbing first, but a TokenService is
+ * routinely used with only *one* of its two methods overridden (e.g.
+ * require-auth.test.ts stubs verifyAccessToken but never calls
+ * signAccessToken) — so both default to plain unconfigured `vi.fn()`s
+ * instead of throwing.
+ */
+export function createFakeTokenService(overrides: Partial<TokenService> = {}): TokenService {
+  return {
+    signAccessToken: vi.fn(),
+    verifyAccessToken: vi.fn(),
     ...overrides,
   };
 }

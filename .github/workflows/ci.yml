@@ -8,10 +8,9 @@ on:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
-    # A PostgreSQL service container is required starting Stage 2 (auth) for
-    # the integration tests, which run against a real database rather than a
-    # mock (see the testing strategy in the README). It's declared from the
-    # start so later stages don't need to touch the workflow's job shape.
+    # A PostgreSQL service container is required for the auth integration
+    # tests, which run against a real database rather than a mock (see the
+    # testing strategy in the README).
     services:
       postgres:
         image: postgres:17
@@ -43,6 +42,16 @@ jobs:
       - run: npm run lint
 
       - run: npm run typecheck
+
+      # `npm run typecheck` runs `tsc --noEmit` against each workspace's
+      # full tsconfig (including tests); the production build uses a
+      # narrower tsconfig.build.json (apps/api) and a real Vite bundle
+      # (apps/web) — different enough that a passing typecheck doesn't
+      # guarantee a passing build. This step actually produces the same
+      # artifact Render and Vercel build from, so a real build failure
+      # (like the Render deploy in the README's deployment architecture
+      # section) would fail CI before it fails a live deploy.
+      - run: npm run build --workspaces --if-present
 
       - name: Apply migrations to the test database
         run: npm run db:migrate:test -w @jambo/api

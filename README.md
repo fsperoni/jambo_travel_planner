@@ -5,10 +5,6 @@ project: pick a city, see a short description, its current weather, and its week
 forecast — including a forecast for a specific day up to five days out. The app defaults to
 the city closest to your IP address.
 
-> **Status: work in progress.** This README is filled in incrementally as each implementation
-> stage lands; sections not yet written are marked `_Coming in Stage N_` below rather than left
-> silently empty.
-
 ## Table of contents
 
 1. [Project overview](#jambo-travel-planner)
@@ -49,8 +45,8 @@ Demo credentials are shared privately with the submission, not committed to this
 repository.
 
 Both are on the platforms' default free-tier domains — no custom domain is used, which is
-fine here since the core (Stages 0–7) authenticates with a Bearer header rather than a cookie,
-so it isn't subject to third-party-cookie restrictions across the two different domains. See
+fine here since the app authenticates with a Bearer header rather than a cookie, so it isn't
+subject to third-party-cookie restrictions across the two different domains. See
 [Authentication](#authentication) and [Trade-offs](#trade-offs) for why that would matter more
 if the (currently out of scope) refresh-token cookie enhancement were added later.
 
@@ -162,8 +158,8 @@ unavailable" case the default-city fallback below exists for.
 
 The backend follows a fairly conventional Express layering — `controllers` parse a request and
 call a `service`, which holds the actual business logic and talks to a `repository` (database)
-or a `client` (external API). `services`/`repositories` arrived in Stage 2 with auth;
-`clients` (external-API integrations — currently just Open-Meteo) arrived in Stage 4.
+or a `client` (external API): `clients/open-meteo/` for weather, `clients/wikipedia/` for city
+descriptions, and `clients/ip-geolocation/` for IP-based location detection.
 
 **Clients never leak vendor shapes.** `clients/open-meteo/raw-types.ts` declares exactly the
 fields Open-Meteo's response actually has (confirmed against a real response, not written from
@@ -173,8 +169,9 @@ documentation alone) — snake_case, a 0/1 `is_day`, five parallel `daily` array
 five parallel arrays), and `client.ts` calls that mapper internally before returning — so even
 `weather.service.ts`, one layer up, only ever works with our own normalized type. If a second
 weather provider were ever added, only this one directory would need to change. `clients/wikipedia/`
-(Stage 5) and `clients/ip-geolocation/` (Stage 6) follow the identical pattern for their own
-upstreams.
+and `clients/ip-geolocation/` follow the identical pattern for their own upstreams; the shared
+`WeatherReport`/`CityDescription` DTO types live in `src/types/`, imported by both a client
+(which produces one) and its service (which consumes it), rather than one importing the other.
 
 **A provider's own "couldn't do this" response is data, not an exception.** ipapi.co has an
 unusual quirk, confirmed against its own documentation and a live 429: a genuine outage/rate
@@ -245,6 +242,18 @@ solve one wiring problem. `getAccessToken` is how `http.ts` attaches the Bearer 
 session and flagging it as expired. A 401 with _no_ token attached (a wrong-password login
 attempt) is deliberately not treated as a session expiry — see [Authentication](#authentication).
 
+**`useCityData` and `useCityDescription` are thin wrappers around one shared hook,**
+`lib/useAbortableRequest.ts` — both used to independently implement the same ~40 lines of
+abort-on-change/loading/error/retry state, which is exactly the kind of duplication that drifts
+out of sync over time rather than staying identical by coincidence. The shared hook takes a
+`key: string | null` (the caller encodes every input it depends on into one string, e.g.
+`` `${lat},${lon},${date ?? ""}` ``) and a `request(signal)` function read through a ref, so the
+underlying effect's dependency array is just `[key, retryCount]` — satisfying `exhaustive-deps`
+honestly rather than needing a suppression comment. Each hook's own public shape (`weather`/
+`cityDescription`, `isLoading`, `error`, `retry`) is unchanged from before the refactor, and
+their existing test suites (written against that shape, not the implementation) all still pass
+unmodified — the intended proof that behavior didn't change, only where the logic lives.
+
 ## Monorepo structure
 
 ```
@@ -267,34 +276,43 @@ jambo-travel-planner/            (repo root)
                                   #   the city catalogue, WMO weather-code labels,
                                   #   truncate-text.ts (word-boundary description truncation),
                                   #   client-ip.ts (normalize + loopback), normalize-city-name.ts
-        clients/                 # http.ts (fetchJson + UpstreamError), open-meteo/,
-                                  #   wikipedia/, and ip-geolocation/ (client.ts, mapper.ts,
-                                  #   raw-types.ts each — vendor shape never leaves its own
-                                  #   directory)
+        clients/                 # http.ts (fetchJson + UPSTREAM_TIMEOUT_MS + UpstreamError),
+                                  #   open-meteo/, wikipedia/, and ip-geolocation/ (client.ts,
+                                  #   mapper.ts, client.test.ts, raw-types.ts each — vendor shape
+                                  #   never leaves its own directory)
+        types/                   # WeatherReport/CityDescription DTOs — shared by a client
+                                  #   (produces) and its service (consumes), avoiding a
+                                  #   two-way import between the two
       migrations/                # node-pg-migrate (TypeScript migration files)
       scripts/seed-users.ts      # thin CLI: parses SEED_USERS, calls the repository
-      test/                      # integration tests (Supertest + a real test database)
+      test/                      # integration tests (Supertest + a real test database), plus
+                                  #   helpers/fixtures.ts (shared test data) and helpers/fakes.ts
+                                  #   (fake service implementations for createApp())
     web/                         # React/TypeScript frontend (Vite)
       src/
-        api/                     # http.ts (Bearer + 401 handling), auth.api.ts, travel.api.ts, types.ts
+        api/                     # http.ts (Bearer + 401 handling, API_BASE_URL, GENERIC_ERROR_MESSAGE),
+                                  #   auth.api.ts, travel.api.ts, types.ts
         auth/                    # AuthContext, AuthProvider, LoginPage
         travel/                  # TravelPlannerPage, CitySelect, CurrentWeatherCard,
                                   #   WeekForecast, CityDescriptionCard, ForecastDatePicker,
                                   #   SelectedDayCard, useCityData (also takes an optional date;
-                                  #   see Timezone / date handling) and useCityDescription (each
-                                  #   with its own abort-based stale-response guard, fetched
+                                  #   see Timezone / date handling) and useCityDescription — both
+                                  #   thin wrappers around lib/useAbortableRequest.ts, fetched
                                   #   independently; location detection is fetched the same way,
                                   #   inline in TravelPlannerPage rather than its own hook, since
                                   #   it's a one-time initial-selection concern, not a per-city
                                   #   refetch)
         components/              # AppHeader, Skeleton, ErrorState (shared shell UI)
-        lib/                     # useDelayedFlag, weather-icons.ts, iso-date.ts (formatWeekday/
+        lib/                     # useAbortableRequest.ts (the abort/loading/error/retry state
+                                  #   machine shared by useCityData and useCityDescription),
+                                  #   useDelayedFlag, weather-icons.ts, iso-date.ts (formatWeekday/
                                   #   formatFullDate pin UTC; formatLocalTime deliberately
                                   #   doesn't — see Timezone / date handling for why both are
                                   #   correct for what each formats)
         styles/                  # tokens.css (design tokens), global.css
-        test/                    # MSW request-mock handlers + a render-with-providers helper
-  e2e/                           # Playwright end-to-end tests (Stage 9)
+        test/                    # fixtures.ts (shared mock data), msw/ (request-mock handlers
+                                  #   built from those fixtures), a render-with-providers helper
+  e2e/                           # Playwright end-to-end tests
     fixtures.ts                  # shared test data — a value is defined once here and
                                   #   referenced by the stub servers, global-setup, and the
                                   #   spec's assertions, rather than duplicated across them
@@ -324,9 +342,9 @@ justify the extra package.
 application memory and sends it in the `Authorization: Bearer` header for protected API
 requests. This was chosen to directly satisfy the project requirement that API requests use
 Bearer-token authentication while avoiding persistent token storage such as localStorage. (A
-longer-lived opaque refresh token in an HttpOnly cookie, described under
-[Trade-offs](#trade-offs), is a conditional Stage 8 enhancement — not required for the core to
-satisfy the assignment.)
+longer-lived opaque refresh token in an HttpOnly cookie was considered and is described under
+[What I'd improve with more time](#what-id-improve-with-more-time) — dropped for time, not
+required for this submission to satisfy the assignment.)
 
 **Login (`POST /api/auth/login`).** `email` + `password` in, an access token + the user out.
 The password is checked with `bcrypt.compare()` against the stored hash. Whether the email
@@ -342,14 +360,15 @@ would make "no such account" answerable purely by response time.
 verification — not left to whatever algorithm the token itself claims to use — and
 issuer/audience are re-checked at verify time too, not just at signing. Its lifetime defaults
 to 15 minutes (`ACCESS_TOKEN_TTL_SECONDS`); without a refresh mechanism, 15 minutes would log a
-reviewer out mid-review, so the production deployment may run with a longer TTL if Stage 8
-isn't implemented — documented under [Trade-offs](#trade-offs) once that's decided.
+reviewer out mid-review, so the production deployment runs with a longer TTL instead — see
+[Deployment architecture](#deployment-architecture) and
+[What I'd improve with more time](#what-id-improve-with-more-time).
 
 **No self-registration.** Accounts are created by an env-driven seed script
 (`npm run db:seed`, reads `SEED_USERS`) rather than a sign-up flow — out of scope by design,
 see [Known limitations](#known-limitations).
 
-**Frontend, as of Stage 3.** `LoginPage` calls `AuthProvider`'s `login()`, which calls the
+**Frontend.** `LoginPage` calls `AuthProvider`'s `login()`, which calls the
 backend and, on success, stores the access token in memory (see
 [Architecture overview](#architecture-overview) for exactly how) and the user in React state —
 never in `localStorage` or a cookie the frontend controls. Every subsequent request through
@@ -357,22 +376,23 @@ never in `localStorage` or a cookie the frontend controls. Every subsequent requ
 401 _with_ a token attached, the session is cleared and the user is returned to the login
 screen with "Your session expired. Please sign in again." A 401 from the login endpoint itself
 (wrong credentials) is shown as a form error instead — it isn't a session expiring, since there
-was never a session to begin with. Logging out is purely client-side in the core (there's no
-`/api/auth/logout` yet — see [Trade-offs](#trade-offs)): it just clears the in-memory token and
-user.
+was never a session to begin with. Logging out is purely client-side (there's no
+`/api/auth/logout` endpoint — see [What I'd improve with more time](#what-id-improve-with-more-time)):
+it just clears the in-memory token and user.
 
 **Reload behaviour, honestly stated:** since the token lives only in memory, refreshing the
 page logs the user out — there is no session to restore from. This is the direct, accepted
-consequence of not using `localStorage` and not yet having a refresh-token cookie (Stage 8).
+consequence of not using `localStorage` and not building the refresh-token enhancement — see
+[Known limitations](#known-limitations).
 
 ## Security considerations
 
-**In place since Stage 1:** Helmet's baseline security headers on every response, a CORS
-allowlist restricting which origins may call the API from a browser at all, a small JSON
-body-size limit, and a central error handler that never sends a stack trace, an internal error
-message, or any other implementation detail to the client.
+**Baseline (every response):** Helmet's baseline security headers, a CORS allowlist
+restricting which origins may call the API from a browser at all, a small JSON body-size limit,
+and a central error handler that never sends a stack trace, an internal error message, or any
+other implementation detail to the client.
 
-**Added in Stage 2:**
+**Passwords and login:**
 
 - Passwords are hashed with bcrypt (cost factor 10) — never stored or logged in plain text,
   never returned in any API response.
@@ -389,13 +409,17 @@ message, or any other implementation detail to the client.
   per-user or per-IP limits based on real usage patterns and upstream-provider quotas, rather
   than picking arbitrary limits here."_ This limiter's accuracy depends on `req.ip` reflecting
   the real client, which in turn depends on Express's `trust proxy` matching the actual
-  deployment — the exact same setting Stage 6's IP geolocation depends on too, see
-  [IP-based geolocation](#ip-based-geolocation); re-verified in the real deployment stage
-  (3.5/11), not just locally.
-- CSRF/XSS implications of the token architecture, and the cookie-specific concerns that come
-  with Stage 8, are covered once that stage lands.
+  deployment — the exact same setting [IP-based geolocation](#ip-based-geolocation) depends on
+  too; re-verified against the real Render deployment, not just locally — see
+  [Deployment architecture](#deployment-architecture).
+- Bearer headers aren't CSRF-able (the browser never attaches one automatically the way it
+  would a cookie), so CSRF isn't a concern for this token architecture as built. It would become
+  one only if the refresh-token-cookie enhancement under
+  [What I'd improve with more time](#what-id-improve-with-more-time) were ever added, at which
+  point `SameSite`, cookie path scoping, and the CORS allowlist above would all need revisiting
+  together.
 
-**Added in Stage 5:**
+**Rendering third-party content:**
 
 - Wikipedia's `extract` field is plain paragraph text (confirmed against real responses, not
   assumed), so it's rendered as-is with no `dangerouslySetInnerHTML` and no HTML
@@ -406,13 +430,15 @@ message, or any other implementation detail to the client.
   `window.opener` handle back to this app's own window (a real, if minor, security gap for any
   `target="_blank"` link, not specific to Wikipedia).
 
-**Added in Stage 6:**
+**IP handling:**
 
 - A visitor's IP address is personal data under most privacy frameworks (e.g. GDPR) even though
   it's used only transiently, in memory, to ask ipapi.co for a city — it's never written to the
   database, never persisted anywhere, and the one place a lookup failure is logged
   (`location.service.ts`'s `console.warn`) deliberately logs the failure reason, not the IP that
-  caused it.
+  caused it. (No consent prompt is shown for this: the lawful basis is that the lookup is
+  necessary for the visible, requested feature — detecting a default city — not persistent
+  tracking or profiling, which is the case that needs explicit opt-in consent.)
 - `TRUST_PROXY_HOPS` set to anything other than the deployment's real hop count is a genuine
   spoofing vector, not just a correctness bug: `true` (trust everything) would let any client
   claim to be any IP simply by sending its own `X-Forwarded-For` header, which would flow
@@ -422,10 +448,10 @@ message, or any other implementation detail to the client.
 
 ## Accessibility
 
-Accessibility work started well before Stage 10 — `role="status"`/`role="alert"` on every
-loading/error state, labelled form controls, `srOnly` text alongside decorative icons — but
-Stage 10 is where the app got a dedicated pass rather than accessibility landing only as a
-byproduct of building each feature.
+Accessibility was a consideration throughout — `role="status"`/`role="alert"` on every
+loading/error state, labelled form controls, `srOnly` text alongside decorative icons — and
+also got one dedicated audit pass, described below, rather than landing only as a byproduct of
+building each feature.
 
 **Two real, measured contrast failures, not eyeballed.** Dark mode's `--color-primary` (used
 for link/icon text sitting directly on `--color-surface`) and `--color-notice` (the
@@ -437,7 +463,7 @@ passes AA in both themes at its current value), and lightening it for readabilit
 card would have made that same value fail as a button background instead — the two roles have
 opposite requirements from the same starting color. `--color-primary-text` now covers the
 text/icon/focus-outline role, adaptive per theme; `--color-primary` stays fixed for buttons. Full
-before/after numbers are in `AI_USAGE.md`'s Stage 10 entry.
+before/after numbers are in `AI_USAGE.md`'s accessibility-pass entry.
 
 **The authenticated view had no `<h1>` at all before this.** `LoginPage` has one, but
 `AppHeader`'s title was a plain `<span>` — meaning a screen-reader user navigating by heading
@@ -516,9 +542,6 @@ var, rather than only discovering the mistake the first time detection needs to 
 
 ## Timezone / date handling
 
-The core mechanism landed in Stage 4, alongside the weather endpoint; Stage 7 adds the actual
-forecast-date picker on top of it.
-
 **The problem this solves:** if it's 11pm in Calgary, it's already tomorrow in Tokyo. "Today"
 only makes sense relative to the city being viewed, not to the server's clock or the browser's
 own time zone. Open-Meteo's `timezone=auto` parameter resolves the correct IANA time zone
@@ -530,8 +553,8 @@ for Tokyo and `"2026-09-25"` for Calgary — the exact scenario this design exis
 live against the real API rather than only covered by a unit-test fixture.
 
 **Dates are kept as plain `"YYYY-MM-DD"` strings end to end** — parsed from Open-Meteo, stored
-in `WeatherReport`, and compared directly as strings for the Stage 7 range check (`"2026-09-27" <
-"2026-10-02"` sorts the same as it compares chronologically — no `Date` parsing needed for the
+in `WeatherReport`, and compared directly as strings for the forecast-date range check
+(`"2026-09-27" < "2026-10-02"` sorts the same as it compares chronologically — no `Date` parsing needed for the
 comparison itself). `new Date("2026-09-25")` parses as UTC midnight; naively formatting that in
 the browser's own time zone can silently shift the displayed date by a day for any browser west
 of UTC. The frontend's `lib/iso-date.ts` avoids this by explicitly formatting with `timeZone:
@@ -549,7 +572,7 @@ displaying the given wall-clock time unchanged regardless of the browser's own z
 directly, not assumed: formatting the same string under three different `TZ` settings
 (UTC, Pacific/Honolulu, Asia/Tokyo) produced the same "7:38 AM" every time.
 
-**The forecast-date picker (Stage 7).** `GET /api/weather` takes an optional `?date=` query
+**The forecast-date picker.** `GET /api/weather` takes an optional `?date=` query
 param — Zod validates it's a real calendar date (a regex alone would accept "2026-02-30";
 `controllers/travel.controller.ts`'s schema actually constructs the date and checks it
 round-trips) — and `weather.service.ts` checks it against that city's own
@@ -595,8 +618,8 @@ header. Every error response uses the same envelope:
 temperature, feelsLike, humidity, windSpeed, isDay, condition: {code, label}}, week:
 DailyForecast[7], selectedDay? }`, where each `DailyForecast` is `{ date, condition,
 temperatureMax, temperatureMin, precipitationProbabilityMax, sunrise, sunset }`. `selectedDay`
-(Stage 7) is present only when a valid `date` was requested — the matching entry from `week`,
-pulled out for convenience so the frontend doesn't have to search the array itself.
+is present only when a valid `date` was requested — the matching entry from `week`, pulled out
+for convenience so the frontend doesn't have to search the array itself.
 
 **`CityDescription`** (see `services/description.service.ts`): `{ title, description: string |
 null, sourceUrl: string | null }`. `description` is Wikipedia's `extract`, truncated at a word
@@ -649,7 +672,9 @@ the box.
 
 Requires Node.js 24+ (see `.nvmrc`). `npm run dev` and `npm run db:seed` both pick up a local
 `.env` file automatically if one exists (`--env-file-if-exists`); it's entirely optional — the
-commands above work with env vars passed inline instead, which is what CI does.
+commands above work with env vars passed inline instead, which is what CI does. `apps/api/.env.example`
+and `apps/web/.env.example` list every variable each app reads, with safe placeholder values —
+copy either to `.env` in the same directory as a starting point.
 
 ## Environment variables
 
@@ -700,7 +725,7 @@ in TypeScript (`apps/api/migrations/*.ts`), run via `npm run db:migrate -w @jamb
 same migrations, different target database). `npm run db:migrate:create -w @jambo/api -- <name>`
 scaffolds a new one.
 
-**Schema, as of Stage 2:**
+**Schema:**
 
 ```sql
 users
@@ -735,7 +760,7 @@ already applied (`npm run db:migrate:test -w @jambo/api`) — see
 message saying so, rather than a confusing connection error. CI provisions a PostgreSQL
 service container and runs the migration automatically before tests.
 
-**`npm run e2e`** (Stage 9) is deliberately separate from `npm test` — it spins up real backend
+**`npm run e2e`** is deliberately separate from `npm test` — it spins up real backend
 and frontend dev servers plus two stub upstream servers (see
 [Testing strategy](#testing-strategy)), which takes a few seconds even when everything's
 already warm, unlike the near-instant unit/integration suite. It needs the same
@@ -750,172 +775,176 @@ npx playwright install --with-deps chromium
 ## Testing strategy
 
 **Unit tests** live next to the file they test (`src/**/*.test.ts`) and cover logic that can
-actually be wrong: env parsing/defaults, the validation middleware, the central error
-handler's mapping from a thrown error to an HTTP response, JWT signing/verification (expired
-tokens, wrong secret, wrong algorithm, wrong issuer/audience — all deliberately tested, not
-just the happy path), the `requireAuth` middleware in isolation (mocked `TokenService`), the
-auth service's login logic (mocked repository — including a test that the timing-safety dummy
-bcrypt compare actually runs on an unknown email, not just that it _would_ if someone
-remembered to call it), and the `SEED_USERS` parser (including the UTF-8-bytes-not-characters
-edge case for the 72-byte bcrypt limit).
+actually be wrong.
 
-**Stage 4 adds:** the Open-Meteo mapper, tested against a fixture built from a real captured
-response (not written from documentation) — current-weather conversion (`is_day: 0/1` → a real
-boolean), all 7 days mapped in order, `localDate`/`allowedForecastDates` derived from
-`daily.time`, and two "the vendor lied about its own shape" cases (an empty `daily.time`, a
-`daily` array shorter than the others) that surface as a clear thrown error rather than
-`undefined` silently flowing into the response; `fetchJson`'s timeout/network-failure/non-2xx
-handling, with the global `fetch` stubbed directly (consistent with how the rest of the backend
-injects a fake collaborator, rather than reaching for a request-mocking library the way the
-frontend does — that style is reserved for where there's a real browser-fetch boundary to
-simulate); and the city catalogue's own integrity (unique ids, valid coordinate ranges).
+- **Foundation:** env parsing/defaults, the validation middleware, the central error handler's
+  mapping from a thrown error to an HTTP response, JWT signing/verification (expired tokens,
+  wrong secret, wrong algorithm, wrong issuer/audience — all deliberately tested, not just the
+  happy path), the `requireAuth` middleware in isolation (a fake `TokenService`), the auth
+  service's login logic (a fake repository — including a test that the timing-safety dummy
+  bcrypt compare actually runs on an unknown email, not just that it _would_ if someone
+  remembered to call it), and the `SEED_USERS` parser (including the UTF-8-bytes-not-characters
+  edge case for the 72-byte bcrypt limit).
+- **Weather:** the Open-Meteo mapper, tested against a fixture built from a real captured
+  response (not written from documentation) — current-weather conversion (`is_day: 0/1` → a
+  real boolean), all 7 days mapped in order, `localDate`/`allowedForecastDates` derived from
+  `daily.time`, and two "the vendor lied about its own shape" cases (an empty `daily.time`, a
+  `daily` array shorter than the others) that surface as a clear thrown error rather than
+  `undefined` silently flowing into the response; `weather.service.ts`'s date handling, with a
+  7-day fixture built once and reused — attaching `selectedDay` for a matching date, both
+  boundaries of `allowedForecastDates` accepted (today and today+5), a date one day before the
+  range and one day after it (today+6 — a real day Open-Meteo returned and that's sitting right
+  there in `week`, but one day narrower than what the picker is allowed to request) both
+  rejected with `ForecastDateOutOfRangeError`, and the thrown error's `details` asserted to
+  actually carry the valid range; and the Open-Meteo client itself (`client.test.ts`) — the
+  request it builds (`timezone=auto`, `forecast_days=7`, coordinate query params) and that a
+  response flows through the real mapper. `fetchJson`'s timeout/network-failure/non-2xx/invalid-
+  JSON-body handling is tested with the global `fetch` stubbed directly (consistent with how the
+  rest of the backend injects a fake collaborator, rather than reaching for a request-mocking
+  library the way the frontend does — that style is reserved for where there's a real
+  browser-fetch boundary to simulate), and the city catalogue's own integrity (unique ids, valid
+  coordinate ranges, alphabetically sorted `listCities()` output — compared against a fresh
+  `localeCompare` sort of the same names, not hand-typed expected strings that could drift, plus
+  a dedicated check that a diacritic city, Šibenik, lands in its correct alphabetical position
+  rather than after every plain-ASCII name).
+- **Description:** the Wikipedia mapper, tested against real captured response shapes for a
+  normal page (Calgary), a disambiguation page (Mercury), and a 404 — all three collapse to
+  `{description: null, sourceUrl: null}`, so the test asserts that collapse explicitly rather
+  than just the happy path; `truncate-text.ts`'s word-boundary cut (unchanged under the limit,
+  cut exactly at the limit, mid-word avoided, and the no-space-found fallback); `fetchJson`'s
+  `notFoundReturnsNull` overload, covered for both the `true` and default/`false` cases; and the
+  Wikipedia client itself (`client.test.ts`) — title encoding (`São Paulo`), the required
+  `User-Agent`/`Accept` headers, a 404 resolving to a `null` description, and a response flowing
+  through the real mapper.
+- **IP geolocation:** `domain/client-ip.ts` (the `::ffff:` prefix stripped, plain IPv4/IPv6 left
+  alone, both loopback forms recognized) and `domain/normalize-city-name.ts` (diacritics
+  stripped, case-insensitive, confirmed to make "Sao Paulo"/"São Paulo" and "Sibenik"/"Šibenik"
+  compare equal); `clients/ip-geolocation/mapper.ts`, covering ipapi.co's own `{error: true}`
+  body alongside a "successful" response missing a field it needs — both collapse to the same
+  `null`, on purpose, the same way Wikipedia's disambiguation/404 cases do; the ipapi.co client
+  itself (`client.test.ts`) — IPv6 address encoding in the request URL and the `{error: true}`
+  body mapping to `null` rather than throwing; and `location.service.ts`'s full decision tree
+  with a fake client — loopback short-circuits before the client is ever called (asserted
+  directly, not just inferred from the result), a thrown error and a mapped `null` both land on
+  the same default-city fallback, a name+country match returns the catalogue entry, and a
+  non-match returns a synthesized `{id: "detected", ...}` city.
 
-**Stage 5 adds:** the Wikipedia mapper, tested against real captured response shapes for a
-normal page (Calgary), a disambiguation page (Mercury), and a 404 — all three collapse to
-`{description: null, sourceUrl: null}`, so the test asserts that collapse explicitly rather than
-just the happy path; `truncate-text.ts`'s word-boundary cut (unchanged under the limit, cut
-exactly at the limit, mid-word avoided, and the no-space-found fallback); and `fetchJson`'s
-`notFoundReturnsNull` overload, covered for both the `true` and default/`false` cases so a
-regression there would fail loudly rather than silently returning `null` somewhere a caller
-isn't expecting it.
-
-**Stage 6 adds:** `domain/client-ip.ts` (the `::ffff:` prefix stripped, plain IPv4/IPv6 left
-alone, both loopback forms recognized) and `domain/normalize-city-name.ts` (diacritics stripped,
-case-insensitive, confirmed to make "Sao Paulo"/"São Paulo" and "Sibenik"/"Šibenik" compare
-equal); `clients/ip-geolocation/mapper.ts`, covering ipapi.co's own `{error: true}` body
-alongside a "successful" response missing a field it needs — both collapse to the same `null`, on
-purpose, the same way Wikipedia's disambiguation/404 cases do; and `location.service.ts`'s full
-decision tree with a fake client — loopback short-circuits before the client is ever called
-(asserted directly, not just inferred from the result), a thrown error and a mapped `null` both
-land on the same default-city fallback, a name+country match returns the catalogue entry, and a
-non-match returns a synthesized `{id: "detected", ...}` city.
-
-**Stage 7 adds:** `weather.service.ts`'s date handling, with a 7-day fixture built once and
-reused — attaching `selectedDay` for a requested date that matches a real entry; both boundaries
-of `allowedForecastDates` accepted (today and today+5); a date one day _before_ the range and one
-day _after_ it (today+6 — a real day Open-Meteo returned and that's sitting right there in
-`week`, but one day narrower than what the picker is allowed to request) both rejected with
-`ForecastDateOutOfRangeError`; and the thrown error's `details` asserted to actually carry the
-valid range, since that's what the frontend's recovery logic depends on. The calendar-date Zod
-schema (`controllers/travel.controller.ts`) is exercised through the integration suite below
-rather than in isolation, matching how `weatherQuerySchema`'s lat/lon checks already were.
+Test-only helpers live in `test/helpers/`: `fixtures.ts` centralizes shared data (a test user's
+credentials, a valid-length JWT secret, `buildWeatherReport`/`buildDay` builders) that several
+of the files above independently reinvented before being consolidated, and `fakes.ts` holds one
+fake implementation per service interface (including `createFakeTokenService`, used by both a
+unit test and the integration suite below) rather than each test file declaring its own copy.
 
 **Integration tests** live under `apps/api/test/` and exercise the whole wired-up app over
 real HTTP with Supertest. `POST /api/auth/login` runs against a real PostgreSQL database rather
 than a mock, since a mock can't catch a mismatch between a migration's columns and a
-repository's SQL the way an actual query does; `/api/cities` and `/api/weather` need no
-database at all, so they're tested with a fake `WeatherService` injected via `createApp()`'s
-dependencies instead — including the Bearer-protection coverage (missing/invalid/valid token)
-that Stage 2 had deferred for lack of a real protected route to test against, and the
-structured-502/504 response `middleware/error-handler.ts` produces when the weather service
-reports an upstream failure. `/api/location`'s tests include the app's numeric `trust proxy`
-setting end to end, over a real Supertest request rather than a unit test of Express's own
-internals: with `TRUST_PROXY_HOPS=1` and a spoofed leftmost `X-Forwarded-For` entry, the location
-service receives the correct (rightmost, actually-observed) address — the exact behavior verified
-empirically while designing the feature, now pinned down as a regression test — and with
-`TRUST_PROXY_HOPS=0` (the local-dev default), the header is ignored entirely. `/api/weather`'s
-Stage 7 tests cover the full validation chain over real HTTP: a valid `date` reaching the service
-unchanged, a malformed one (`09/27/2026`) and a nonexistent one (`2026-02-30`, a fake fixture
-never even having to model a leap year for this to matter) both rejected as `VALIDATION_ERROR`,
-and a service-level `ForecastDateOutOfRangeError` surfacing as `400` with `FORECAST_DATE_OUT_OF_RANGE`
-and the valid range in `details` — the same shape `TravelPlannerPage`'s frontend recovery logic
-is written against.
+repository's SQL the way an actual query does; `/api/cities`, `/api/weather`,
+`/api/city-description`, and `/api/location` need no database at all, so they're tested with
+fake services injected via `createApp()`'s dependencies instead (an `authedGet(path, app)` test
+helper attaches a valid Bearer token so each test doesn't repeat that line) — including the
+Bearer-protection coverage (missing/invalid/valid token) and the structured 502/504 response
+`middleware/error-handler.ts` produces when a service reports an upstream failure.
+`/api/location`'s tests include the app's numeric `trust proxy` setting end to end, over a real
+Supertest request rather than a unit test of Express's own internals: with `TRUST_PROXY_HOPS=1`
+and a spoofed leftmost `X-Forwarded-For` entry, the location service receives the correct
+(rightmost, actually-observed) address — the exact behavior verified empirically while
+designing the feature, now pinned down as a regression test — and with `TRUST_PROXY_HOPS=0`
+(the local-dev default), the header is ignored entirely. `/api/weather`'s tests cover the full
+date-validation chain over real HTTP: a valid `date` reaching the service unchanged, a malformed
+one (`09/27/2026`) and a nonexistent one (`2026-02-30`, a fake fixture never even having to
+model a leap year for this to matter) both rejected as `VALIDATION_ERROR`, and a service-level
+`ForecastDateOutOfRangeError` surfacing as `400` with `FORECAST_DATE_OUT_OF_RANGE` and the valid
+range in `details` — the same shape `TravelPlannerPage`'s frontend recovery logic is written
+against.
 
-Coverage (`npm run test:coverage`) is scoped to directories with real logic (`config`,
-`errors`, `middleware`, `services`, `domain`, `clients/*/mapper.ts`) rather than boilerplate
-like route wiring — there's no 100% target. Expanded through Stage 9; see the project's testing
-matrix for the full requirement-to-test mapping.
+Coverage (`npm run test:coverage`) covers all of `src/`, excluding only files with no real logic
+to get wrong: `server.ts` (the composition root — `.listen()` and wiring, exercised by the
+integration suite via `createApp()` rather than by a unit test of its own), `db/pool.ts` (a
+one-line `pg.Pool` constructor call), and type-only files (`types/**`, `**/raw-types.ts`). At
+last count: **97.99% statements, 92.18% branches, 100% functions, 98.34% lines** — see the
+project's testing matrix for the full requirement-to-test mapping.
 
-**Frontend tests**, as of Stage 3, use React Testing Library and [MSW](https://mswjs.io) to
-intercept `fetch` at the network level rather than mocking `fetch` itself or the API-client
-functions — a request that doesn't match a configured handler fails the test loudly
-(`onUnhandledRequest: "error"`), instead of silently hitting the real network. Tests fall into
-three levels: a pure-logic unit test with no rendering at all (`useDelayedFlag`, using fake
-timers rather than waiting on real ones); component tests with `useAuth()` mocked directly, so
-`LoginPage`'s own rendering logic (form, pending state, error display) is tested in isolation
-from `AuthProvider`; and one integration-style test (`App.test.tsx`) that renders real
+**Frontend tests** use React Testing Library and [MSW](https://mswjs.io) to intercept `fetch`
+at the network level rather than mocking `fetch` itself or the API-client functions — a request
+that doesn't match a configured handler fails the test loudly (`onUnhandledRequest: "error"`),
+instead of silently hitting the real network. Shared mock data (`VALID_CREDENTIALS`,
+`MOCK_CITIES`, `MOCK_WEATHER_REPORT`, `buildWeatherReport`, etc.) lives in `test/fixtures.ts`,
+imported both by the default MSW handlers (`test/msw/handlers.ts`) and by individual tests that
+need to assert against the same values, rather than each test file inventing its own city or
+weather-report literal.
+
+Tests fall into three levels: a pure-logic unit test with no rendering at all (`useDelayedFlag`,
+using fake timers rather than waiting on real ones); component tests with `useAuth()` mocked
+directly, so `LoginPage`'s own rendering logic (form, pending state, error display) is tested in
+isolation from `AuthProvider`; and one integration-style test (`App.test.tsx`) that renders real
 components through a real `AuthProvider`, types into real inputs, and drives an MSW-mocked
-login end to end to confirm the login screen actually gets swapped for the authenticated view —
-the level at which "does the wiring between AuthProvider, http.ts, and LoginPage actually work"
-gets tested, rather than asserted piecewise across separate unit tests. That same test now
-continues one step further, into Stage 4's travel planner, confirming the default city's
-weather renders with no further user action needed.
+login end to end to confirm the login screen actually gets swapped for the authenticated view,
+the default city's weather renders with no further user action needed, a real `<h1>` names the
+authenticated view, and focus actually lands on it after login (this last assertion confirmed to
+catch a real regression by temporarily breaking the `.focus()` call and watching the test fail
+before reverting) — the level at which "does the wiring between AuthProvider, http.ts, and
+LoginPage actually work" gets tested, rather than asserted piecewise across separate unit tests.
 
-**Stage 4's most important frontend test** is `useCityData`'s stale-response guard: MSW's
-`delay()` helper deliberately makes one city's response slow and a second city's fast, switches
-between them before the slow one resolves, and asserts the slow response never overwrites the
-fast one once it's already displayed — a real race condition, reproduced deliberately rather
-than hoped not to occur. `TravelPlannerPage`'s own test goes one level up, switching cities
-through the actual rendered `<select>` and confirming the _displayed_ temperature and condition
-change to match — not just that the dropdown's value changed, but that the switch actually
-re-fetched and re-rendered. `CitySelect`, `CurrentWeatherCard`, and `WeekForecast` each get
-focused tests for their own rendering logic (temperature rounding, the "Today" label always
-applying to the first day regardless of what weekday it falls on, `onChange` firing with the
-right city id), and `iso-date.ts`'s weekday formatter has a test that deliberately compares
-against Honolulu (UTC-10) to prove the date-shift bug it avoids is real, not hypothetical.
+**The most important frontend test** is `useCityData`'s stale-response guard: MSW's `delay()`
+helper deliberately makes one city's response slow and a second city's fast, switches between
+them before the slow one resolves, and asserts the slow response never overwrites the fast one
+once it's already displayed — a real race condition, reproduced deliberately rather than hoped
+not to occur. `useCityDescription` gets the identical race test against its own implementation,
+written separately rather than assumed to pass just because `useCityData`'s version does — both
+hooks are now thin wrappers around the same shared `lib/useAbortableRequest.ts` (see
+[Architecture overview](#architecture-overview)), but the test predates that refactor and still
+earns its place: it would catch a regression in the shared hook just as readily as in either
+hook's own code. `TravelPlannerPage`'s own test goes one level up, switching cities through the
+actual rendered `<select>` and confirming the _displayed_ temperature and condition change to
+match — not just that the dropdown's value changed, but that the switch actually re-fetched and
+re-rendered. `CitySelect`, `CurrentWeatherCard`, and `WeekForecast` each get focused tests for
+their own rendering logic, and `iso-date.ts`'s weekday formatter has a test that deliberately
+compares against Honolulu (UTC-10) to prove the date-shift bug it avoids is real, not
+hypothetical.
 
-**Stage 5 adds** `useCityDescription`, structured identically to `useCityData` and given the
-same stale-response race test (a slow title lookup and a fast one, switching before the slow
-one resolves) — written as its own test rather than assumed to work just because `useCityData`'s
-version passes, since the two hooks don't share an implementation. `CityDescriptionCard` is
-tested for both states it can render: description text with a "Read more on Wikipedia" link
-(asserting `href`, `target="_blank"`, and `rel="noopener noreferrer"` explicitly, since a
-missing `rel` on a `target="_blank"` link is a real, if minor, security gap — see
-[Security considerations](#security-considerations)) and the named empty state used when
-`description` is `null`, asserted to _not_ render an error or a link. Because the description
-and weather cards fetch independently, one existing `TravelPlannerPage` test (a weather-only
-upstream failure) surfaced a gap the first time it was run against the new hook: MSW had no
-default handler for `/api/city-description` yet, so that request failed too, producing two
-error alerts where the test expected one isolated failure. Fixing that meant adding a default
-success handler for the endpoint (`test/msw/handlers.ts`) — the kind of test-infrastructure gap
-that only shows up by actually running the suite, not by reading the new code in isolation.
+`CityDescriptionCard` is tested for both states it can render: description text with a "Read
+more on Wikipedia" link (asserting `href`, `target="_blank"`, and `rel="noopener noreferrer"`
+explicitly — see [Security considerations](#security-considerations)) and the named empty state
+used when `description` is `null`, asserted to _not_ render an error or a link.
+`TravelPlannerPage` also covers location-driven default selection: an IP-detected city already
+in the catalogue is selected with a "Detected from your IP" notice; a detected city _not_ in the
+catalogue is inserted at the top of the dropdown and selected; a provider fallback shows the
+honestly-worded "Couldn't detect your location" notice rather than an error; a total
+`/api/location` failure falls back to the first catalogue city silently; and a manual city
+change clears a previously-shown notice, since it no longer describes anything true.
 
-**Stage 6 adds** location-driven default-selection tests on `TravelPlannerPage`: an IP-detected
-city already in the catalogue is selected with a "Detected from your IP" notice; a detected city
-_not_ in the catalogue is inserted at the top of the dropdown and selected; a provider fallback
-shows the honestly-worded "Couldn't detect your location" notice rather than an error; a total
-`/api/location` failure falls back to the first catalogue city silently, with no visible error or
-notice, since detecting a location is a nice-to-have default, not a feature the user asked to see
-fail; and a manual city change clears a previously-shown notice, since it no longer describes
-anything true. The default MSW handler for `/api/location` (`test/msw/handlers.ts`) deliberately
-returns the same city as `MOCK_CITIES[0]`, so every test written before Stage 6 keeps passing
-unchanged rather than needing to also mock an endpoint it was never about.
-
-**Stage 7 adds** `useCityData`'s `date` parameter and `errorCode` field: a rerender with a new
-date triggers a real refetch (asserted against the actual query string an MSW handler receives,
-not just that _a_ request happened), and a `FORECAST_DATE_OUT_OF_RANGE` response is asserted to
-surface through `errorCode` distinctly from the human-readable `error` message, since
+`useCityData`'s `date` parameter and `errorCode` field are tested directly: a rerender with a
+new date triggers a real refetch (asserted against the actual query string an MSW handler
+receives, not just that _a_ request happened), and a `FORECAST_DATE_OUT_OF_RANGE` response
+surfaces through `errorCode` distinctly from the human-readable `error` message, since
 `TravelPlannerPage`'s recovery logic switches on the former. `ForecastDatePicker` and
-`SelectedDayCard` each get focused rendering tests (`min`/`max`/`value` wiring, `onChange` firing
-with the typed date or `null` on clear; rounded temperatures, the condition label, and
-sunrise/sunset formatted as local wall-clock times). `TravelPlannerPage`'s two most important
-Stage 7 tests: picking a date renders the selected-day card with the right data (scoped with
-`within()`, since the same day's temperature is _also_ visible in the still-rendered week strip —
-an ambiguous-query trap the test deliberately avoids rather than accidentally passing for the
-wrong reason); and picking a date, then switching cities, confirms the date resets to empty and
-the switch's own weather request never carries the old date at all (asserted against the actual
-query string, not just the UI's end state) — the proactive-clearing behavior added in Stage 10.
-A separate test drives the _reactive_ fallback directly, without any city change: the same
-city's allowed range shifting between one request and the next (e.g. time passing) still
-recovers via `FORECAST_DATE_OUT_OF_RANGE`, reproduced as a real race between a user action and a
-server rejection rather than only argued for in prose.
+`SelectedDayCard` each get focused rendering tests. `TravelPlannerPage`'s date-related tests:
+picking a date renders the selected-day card with the right data (scoped with `within()`, since
+the same day's temperature is _also_ visible in the still-rendered week strip — an
+ambiguous-query trap the test deliberately avoids); switching cities resets the date to empty
+and the switch's own weather request never carries the old date at all (asserted against the
+actual query string, proving it's cleared _before_ that request goes out, not just that the UI
+resets afterward — the proactive-clearing path); and, separately, the same city's allowed range
+shifting between one request and the next (e.g. time passing) still recovers via
+`FORECAST_DATE_OUT_OF_RANGE` without any city change (the reactive-clearing path), reproduced as
+a real race between a user action and a server rejection rather than only argued for in prose.
 
-**End-to-end (Stage 9), `e2e/`, is a different kind of test from everything above** — real
-backend and frontend dev servers, a real (test) database, and a real Chromium browser driven by
-[Playwright](https://playwright.dev), rather than fakes/mocks/jsdom. The one thing that's
-_not_ real is the external upstreams: `e2e/stub-servers.ts` runs plain `node:http` servers
-standing in for Open-Meteo and Wikipedia, so the suite never depends on (or is ever flaky
-because of) a live third party — the exact problem the project plan's R11 risk flagged before
-this stage was built. `IP_GEOLOCATION_BASE_URL` points at a deliberately unreachable
-`.invalid` host with _no_ stub behind it at all: Playwright's browser connects to the backend
-over loopback with `TRUST_PROXY_HOPS=0`, so `location.service.ts`'s `isLoopback()` check
-short-circuits before that URL would ever be requested — if that assumption were ever broken by
-a future change, this would fail loudly (a connection error) instead of silently reaching a
-real API.
+**End-to-end, `e2e/`, is a different kind of test from everything above** — real backend and
+frontend dev servers, a real (test) database, and a real Chromium browser driven by
+[Playwright](https://playwright.dev), rather than fakes/mocks/jsdom. The one thing that's _not_
+real is the external upstreams: `e2e/stub-servers.ts` runs plain `node:http` servers standing in
+for Open-Meteo and Wikipedia, so the suite never depends on (or is ever flaky because of) a live
+third party. `IP_GEOLOCATION_BASE_URL` points at a deliberately unreachable `.invalid` host with
+_no_ stub behind it at all: Playwright's browser connects to the backend over loopback with
+`TRUST_PROXY_HOPS=0`, so `location.service.ts`'s `isLoopback()` check short-circuits before that
+URL would ever be requested — if that assumption were ever broken by a future change, this would
+fail loudly (a connection error) instead of silently reaching a real API.
 
-`e2e/fixtures.ts` centralizes every value the stub servers return and the spec asserts on, so
-(for example) Calgary's fixture temperature is defined exactly once and referenced by both
-sides — a mismatch between "what the stub sends" and "what the test expects" isn't possible by
+`e2e/fixtures.ts` centralizes every value the stub servers return and the spec asserts on —
+including the dedicated ports each dev server and stub runs on, shared with
+`playwright.config.ts` and `stub-servers.ts` so the two can't silently drift apart — so (for
+example) Calgary's fixture temperature is defined exactly once and referenced by both sides: a
+mismatch between "what the stub sends" and "what the test expects" isn't possible by
 construction. `e2e/global-setup.ts` runs the backend's own migration script against
 `TEST_DATABASE_URL` (reused from the integration suite, not a separate database — see
 [Running tests](#running-tests)) and seeds one fixed demo account, truncating `users` first so a
@@ -931,17 +960,9 @@ actually catch a regression, not just pass vacuously: deliberately corrupting a 
 made the test fail with a clear, real diff between expected and rendered text, then passed
 clean again once reverted.
 
-**Stage 10 adds:** `city-catalogue.test.ts` asserts `listCities()`'s output is actually sorted
-(compared against a fresh `localeCompare` sort of the same names, not hand-typed expected
-strings that could drift), plus a dedicated check that a diacritic city (Šibenik) lands in its
-correct alphabetical position rather than after every plain-ASCII name. `TravelPlannerPage`'s
-date-clearing behavior split into two tests matching the two distinct code paths that can now
-clear a date: switching cities (asserted against the actual query string the new city's weather
-request carries — proving the date is cleared _before_ that request goes out, not just that the
-UI resets afterward) and the same city's allowed range shifting without any city change (the
-narrower, `FORECAST_DATE_OUT_OF_RANGE` recovery path). `App.test.tsx` gained the two Accessibility
-section assertions (a real `<h1>`, and that focus actually lands on it after login) — the focus
-one confirmed to catch a real regression by temporarily breaking it and watching the test fail.
+Frontend coverage (`npm run test:coverage -w @jambo/web`), same scoping philosophy as the
+backend's (real logic, not boilerplate): at last count, **97.53% statements, 92.99% branches,
+96.47% functions, 98.65% lines**.
 
 ## Deployment architecture
 
@@ -957,7 +978,7 @@ flowchart LR
 
 Three free tiers, each on its own default domain (`*.vercel.app`, `*.onrender.com`,
 `*.neon.tech`) — no custom domain, which is a deliberate non-decision rather than an oversight:
-the core (Stages 0–7) authenticates with a Bearer header, not a cookie, so it isn't subject to
+this app authenticates with a Bearer header, not a cookie, so it isn't subject to
 the third-party-cookie restrictions that would make same-site custom subdomains matter (see
 [Authentication](#authentication)). A custom domain remains an option to revisit only if the
 optional refresh-token cookie enhancement is ever added.
@@ -995,10 +1016,10 @@ request to an internal address would have produced instead.
 for what each one does): `NODE_ENV=production`, `DATABASE_URL` (Neon's pooled connection
 string), `JWT_SECRET` (a real random secret, generated once for this deployment — never the
 local-dev one), `ACCESS_TOKEN_TTL_SECONDS=3600` (not the 15-minute dev default — see
-[Trade-offs](#trade-offs) for why, now that the refresh-token enhancement is out of scope for
+[Trade-offs](#trade-offs) for why, given the refresh-token enhancement is out of scope for
 this submission), `TRUST_PROXY_HOPS=1`, `DEFAULT_CITY_ID=calgary`, `WIKIPEDIA_USER_AGENT` (set
 to a real, reachable contact — this repository's own GitHub URL — rather than a personal email,
-continuing the Stage 5 decision), and `CORS_ORIGINS` (the Vercel deployment's exact origin, no
+per [Why these external APIs](#why-these-external-apis)), and `CORS_ORIGINS` (the Vercel deployment's exact origin, no
 trailing slash — a trailing slash or an accidentally-blanked value both silently reject every
 origin, including the correct one, which is exactly what happened once during setup and was
 caught by comparing the response to a deliberately wrong `Origin` header for contrast).
@@ -1010,20 +1031,114 @@ against any reachable PostgreSQL connection string.
 
 ## AI usage
 
-Development uses Claude Code (Anthropic) and, at times, ChatGPT as coding assistants,
-disclosed here per the assignment's AI use policy. A running log of what was AI-assisted and
-how is kept in [`AI_USAGE.md`](./AI_USAGE.md) throughout development; this section will
-summarize it once the project is feature-complete. I remain responsible for reviewing,
-understanding, and being able to defend every line of submitted code.
+Development uses **Claude Code (Anthropic)** as the primary coding assistant — planning,
+scaffolding, implementation, tests, and code review throughout — and, at times, **ChatGPT** for
+secondary review of specific decisions, disclosed here per the assignment's AI use policy.
+A running, dated log of what was AI-assisted and how is kept in [`AI_USAGE.md`](./AI_USAGE.md):
+what each stage of work covered, real mistakes it made and how they were caught (a Mermaid
+diagram that failed to parse, `Express 5`'s `req.query` becoming read-only, a `credentials: true`
+CORS option added for a feature later dropped, a coverage-scope blind spot that hid three
+untested upstream clients, duplicated test fixtures found during this review), and the specific
+numbers behind claims made in this README (the WCAG contrast failures' before/after ratios, test
+counts, coverage percentages).
+
+I reviewed every line for correctness and understanding before accepting it, and I'm prepared to
+explain and defend any part of this codebase in the technical walkthrough — including which
+parts I wrote versus revised versus asked for outright, and why. AI accelerated typing out
+already-decided designs and caught some real mistakes in review (see `AI_USAGE.md`), but every
+architectural decision — React over Angular, the split-endpoints design, the token storage
+strategy, what to cut for time — was mine, made deliberately and for reasons stated throughout
+this README, not accepted as a suggestion without evaluating alternatives.
 
 ## Known limitations
 
-_Coming in Stage 11, alongside the final deploy._
+Honestly stated gaps and constraints in this submission, as built:
+
+- **No session persistence across a reload.** The access token lives only in memory (see
+  [Authentication](#authentication)); refreshing the page or closing the tab logs you out. The
+  refresh-token enhancement that would fix this was considered and dropped for time — see
+  [What I'd improve with more time](#what-id-improve-with-more-time).
+- **No account management.** One seeded demo account, created by an env-driven script — no
+  self-registration, change-password, or forgot-password flow.
+- **No token revocation before expiry.** Logging out only clears the token client-side; a
+  stolen or leaked access token stays valid until it naturally expires (up to an hour in
+  production). This is the standard stateless-JWT trade-off; a server-side blacklist was judged
+  not worth the added state for this submission's scope.
+- **Free-tier cold starts.** Render spins the API down when idle, so the first request after a
+  period of inactivity can take significantly longer than normal — `LoginPage` shows a
+  reassuring notice once a login attempt has been slow for a few seconds, but the delay itself
+  isn't eliminated.
+- **ipapi.co's free-tier quota is shared and can be exhausted** (witnessed firsthand — a real
+  `429` — from two independent networks while building this). When that happens, location
+  detection falls back to the default city, honestly labelled as a fallback, not a false
+  detection.
+- **IP-based location detection can be inaccurate on cellular networks** specifically, since a
+  carrier's gateway location doesn't always correspond to the device's actual location — see
+  [What I'd improve with more time](#what-id-improve-with-more-time) for the device-geolocation
+  alternative considered.
+- **City matching is exact (name + country code), not fuzzy or distance-based.** A detected
+  location whose provider-given name doesn't match the catalogue (after diacritic/case
+  normalization) is shown as a one-off entry rather than merged with a near-miss catalogue city.
+- **No persistence for cities, favourites, or travel history.** The city catalogue is a small,
+  static, version-controlled list (~10 cities) — see [Database / migrations](#database-migrations)
+  for why that's a deliberate choice, not an oversight.
+- **The login rate limiter is in-memory and per-process** — it resets on every redeploy/restart
+  and wouldn't coordinate across multiple instances if this were ever scaled horizontally.
+- **English-only descriptions** (Wikipedia's English REST API) and **Celsius-only temperatures**
+  — no locale or unit toggle.
+- **Open-Meteo's free tier is licensed for non-commercial use only** — fine for this take-home,
+  but a real constraint if this were ever operated commercially without a paid plan.
 
 ## Trade-offs
 
-_Coming in Stage 11 — see `AI_USAGE.md` and the project plan in the meantime for the
-trade-offs identified during design._
+Design decisions made deliberately, with an alternative considered and set aside — most are
+explained in full where linked; this section is a scannable index of all of them together, since
+that's explicitly one of the discussion topics for the technical walkthrough.
+
+- **React over Angular** (and **Express over NestJS**) — see
+  [Why React instead of Angular](#why-react-instead-of-angular) and [Why Express](#why-express).
+- **Token storage: in-memory JWT + Bearer header, not `localStorage` or a refresh cookie** — see
+  [Authentication](#authentication). The refresh-token-cookie alternative was designed but
+  dropped for time (see [What I'd improve with more time](#what-id-improve-with-more-time)); a
+  60-minute access token (`ACCESS_TOKEN_TTL_SECONDS=3600` in production, vs. a 15-minute default
+  meant for when a refresh mechanism exists) is the accepted stand-in, and comes with no
+  revocation before expiry — see [Known limitations](#known-limitations).
+- **`pg` with hand-written SQL, not an ORM** — see [Why PostgreSQL](#why-postgresql).
+- **No `cities`, `favourites`, or `travel_history` tables** — a static, typed catalogue instead;
+  see [Database / migrations](#database-migrations).
+- **Split endpoints** (`/api/weather`, `/api/city-description`, `/api/location` independently,
+  rather than one aggregated response) — see [Architecture overview](#architecture-overview) and
+  the [Testing strategy](#testing-strategy)'s independent-failure tests. The trade-off: an
+  authenticated client can query any coordinates or title directly, not just a catalogue city's
+  own — acceptable since the underlying data is public and every route is Zod-validated and
+  behind Bearer auth regardless.
+- **A 7-day week alongside a today-to-today+5 date picker**, rather than making the two ranges
+  match — see [Timezone / date handling](#timezone-date-handling); the assignment's optional
+  date feature asks for up to 5 days ahead specifically.
+- **Exact name+country city matching for IP detection, not distance/fuzzy matching** — see
+  [IP-based geolocation](#ip-based-geolocation).
+- **Relying on `trust proxy` + the provider's own validation + a graceful fallback, instead of
+  hand-rolled IP-range classification** — see [IP-based geolocation](#ip-based-geolocation).
+- **ipapi.co over ip-api.com** — see [Why these external APIs](#why-these-external-apis); the
+  latter's free tier is HTTP-only, disqualifying for sending a real client IP.
+- **Rate limiting only on login, not a general API limiter** — see
+  [Security considerations](#security-considerations).
+- **Caching considered and deliberately not built** — see
+  [What I'd improve with more time](#what-id-improve-with-more-time) for the design that was
+  thought through anyway.
+- **One monorepo, no `packages/shared`** — see [Monorepo structure](#monorepo-structure).
+- **No TanStack Query or React Router** — the app has one route and a handful of fetches; each
+  hand-rolled `useEffect`/`AbortController` hook (now consolidated into
+  [`lib/useAbortableRequest.ts`](#architecture-overview)) is something I wrote and can explain
+  line by line, and there's no routing to speak of in a single-page tool with one view.
+- **Hand-written CSS Modules, not a component/CSS framework** — full control over the
+  [Accessibility](#accessibility) contrast fixes described above would have meant fighting a
+  framework's own defaults instead.
+- **Demo credentials shared privately, not committed** — see [Live demo](#live-demo); there's no
+  self-registration (see [Known limitations](#known-limitations)) so a real account has to be
+  handed over out of band regardless.
+- **Free-tier hosting, accepted cold starts** — see [Known limitations](#known-limitations) and
+  [Deployment architecture](#deployment-architecture).
 
 ## What I'd improve with more time
 
@@ -1048,11 +1163,11 @@ to function at all.
 (see [Trade-offs](#trade-offs)), but the design was thought through: an in-memory `Map` keyed by
 the request's own parameters, with a TTL chosen per how often each value actually changes —
 
-| Cached call               | Cache key                                                                                  | TTL         | Why that TTL                                                                                                                                                                                                                                                                         |
-| ------------------------- | ------------------------------------------------------------------------------------------ | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Weather (Open-Meteo)      | `latitude,longitude` (rounded — the same city is always requested at the same coordinates) | ~10 minutes | Weather itself doesn't meaningfully change minute to minute, and this is the call most likely to get rate-limited under real traffic (confirmed firsthand during Stage 3.5's deployment verification — Open-Meteo's own free tier returned a real `503 "The service is overloaded"`) |
-| Description (Wikipedia)   | the requested `title`                                                                      | ~24 hours   | Article text changes rarely; there's no reason to re-fetch the same city's description more than about once a day                                                                                                                                                                    |
-| IP geolocation (ipapi.co) | the normalized client IP                                                                   | ~24 hours   | A given IP's city rarely changes within a day, and this is the upstream with the tightest free-tier quota — confirmed firsthand too (ipapi.co's free tier was already exhausted, a real `429`, from two independent networks while building Stage 6)                                 |
+| Cached call               | Cache key                                                                                  | TTL         | Why that TTL                                                                                                                                                                                                                                                             |
+| ------------------------- | ------------------------------------------------------------------------------------------ | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Weather (Open-Meteo)      | `latitude,longitude` (rounded — the same city is always requested at the same coordinates) | ~10 minutes | Weather itself doesn't meaningfully change minute to minute, and this is the call most likely to get rate-limited under real traffic (confirmed firsthand during deployment verification — Open-Meteo's own free tier returned a real `503 "The service is overloaded"`) |
+| Description (Wikipedia)   | the requested `title`                                                                      | ~24 hours   | Article text changes rarely; there's no reason to re-fetch the same city's description more than about once a day                                                                                                                                                        |
+| IP geolocation (ipapi.co) | the normalized client IP                                                                   | ~24 hours   | A given IP's city rarely changes within a day, and this is the upstream with the tightest free-tier quota — confirmed firsthand too (ipapi.co's free tier was already exhausted, a real `429`, from two independent networks while building IP-based location detection) |
 
 The reason this stayed out rather than getting built anyway: a per-process `Map` is trivial for
 a single Render instance (this deployment), but wouldn't be correct behavior with more than one
@@ -1061,9 +1176,9 @@ which instance happened to handle a given request); a real multi-instance deploy
 shared store (Redis) instead, which is real infrastructure this take-home doesn't have a
 justified reason to add. Documented here so the reasoning exists even without the code.
 
-**Refresh tokens** (Stage 8 in the original plan, dropped for time — see
+**Refresh tokens** (considered during planning, dropped for time — see
 [Authentication](#authentication)): an opaque token in an HttpOnly cookie, rotated on use, so a
-page reload doesn't require signing in again. The core's 60-minute access token
+page reload doesn't require signing in again. The current 60-minute access token
 (`ACCESS_TOKEN_TTL_SECONDS`, see [Deployment architecture](#deployment-architecture)) is the
 accepted stand-in for now.
 

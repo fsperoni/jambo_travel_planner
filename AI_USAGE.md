@@ -2,7 +2,7 @@
 
 This is a running log of how AI tools were used while building this project, kept during
 development rather than reconstructed afterward, per the assignment's AI use policy. It's
-summarized in the [README](./README.md#ai-usage) once the project is feature-complete.
+summarized in the [README's AI usage section](./README.md#ai-usage).
 
 For every entry: I (Fabio) reviewed the output to understand it, and made final decisions. Where I changed or rejected something AI proposed, that's noted
 explicitly - those are usually the more interesting parts of this log.
@@ -703,7 +703,43 @@ test bug, recognized and avoided directly this time rather than rediscovered fro
 **Corrections requested by Fabio:** none this stage beyond the shared suggestion noted above,
 which matched the existing plan rather than changing it.
 
-## 2026-09-28 - Stage 9: Playwright end-to-end
+## 2026-09-27 - Refresh tokens (Stage 8): dropped for time
+
+**Tool:** none — a scope decision Fabio made directly, not an AI-assisted task.
+
+With the milestone gate (Stages 0-7) complete, tested, and polished, Fabio decided to drop the
+conditional refresh-token enhancement (made conditional back in the
+["Final simplification pass"](#2026-09-25---final-simplification-pass-before-stage-2) entry
+above) rather than build it: "Let's drop refresh tokens - I won't have time to do it. We can add
+it to the list of improvements." No code exists for it and none was written; the 15-minute
+default access-token TTL was raised to 60 minutes in production instead, as the accepted
+stand-in without a refresh mechanism. Documented in the README's
+[Authentication](./README.md#authentication) section and, in full, under
+[What I'd improve with more time](./README.md#what-id-improve-with-more-time).
+
+## 2026-09-27 - Deployment (Vercel + Render + Neon)
+
+**Tool:** Claude Code, for diagnosis; the actual console clicks (creating services, setting env
+vars, triggering redeploys) were done by Fabio, since this session has no browser-automation
+tooling.
+
+Deployed the frontend to Vercel, the backend to Render, and PostgreSQL to Neon, all on their
+default free-tier domains — Fabio was already logged into all three in his own browser. Three
+real, live issues came up during setup and were diagnosed remotely (curl, response-header
+inspection, grepping the actual served JS bundle) rather than guessed at: a Render build
+failure, a wrong frontend API URL baked into a built bundle, and a CORS configuration that
+silently rejected every origin. Per Fabio's instruction ("those were typos and don't need to be
+in AI_USAGE"), the specifics live only in the README's
+[Deployment architecture](./README.md#deployment-architecture) section, not duplicated here —
+not every fixed mistake belongs in this log; deployment/infra typos documented in the project's
+own technical documentation don't also need a disclosure entry.
+
+Also verified for real once deployed, not just locally: `TRUST_PROXY_HOPS=1` against Render's
+actual reverse proxy (`/api/location` correctly returns `reason: "lookup-failed"` for a real
+external IP, not `"local-development"`, which is what a misconfigured hop count would have
+produced instead).
+
+## 2026-09-27 - Stage 9: Playwright end-to-end
 
 **Tool:** Claude Code.
 
@@ -755,7 +791,7 @@ risk reusing the database introduces.
 
 **Corrections requested by Fabio:** none this stage.
 
-## 2026-09-28 - Stage 10: polish (plus three specific requests)
+## 2026-09-27 - Stage 10: polish (plus three specific requests)
 
 **Tool:** Claude Code.
 
@@ -842,3 +878,76 @@ a clean pass.
 **Corrections requested by Fabio:** none directly on implementation. The three requests that
 opened this stage (IP question, city sort, date-clear) were new asks, not corrections to
 anything already built.
+
+## 2026-09-27 - Pre-submission review: code smells, test reuse, coverage, requirements
+
+**Tool:** Claude Code.
+
+Before submitting, Fabio asked for four things: a code-smell review, a test-reuse review
+(repeated emails/passwords/URLs that should be shared constants), a coverage check, and a
+cross-check against the assignment PDF for anything missing. Findings, verified rather than
+assumed, and each fixed:
+
+**A real, previously untested failure path in `fetchJson`, caught by writing the failing test
+first.** A 2xx response whose body isn't valid JSON (an HTML error page from a misconfigured
+proxy, an empty body) made `response.json()` throw an uncaught `SyntaxError`, which the central
+error handler would map to a generic 500 — inconsistent with every other upstream failure in
+that file, which maps to a structured 502. Added the test, confirmed it failed against the
+existing code (a real `SyntaxError`, not the expected `UpstreamError`), then wrapped the parse
+in a `try/catch` and confirmed the same test now passes.
+
+**A real coverage-scope blind spot, not just a low number.** The API's `vitest.config.ts`
+`coverage.include` list predated the three upstream clients (`open-meteo/client.ts`,
+`wikipedia/client.ts`, `ip-geolocation/client.ts`) and never included them — so the reported
+97%+ number was accurate for what it measured but silently excluded three files with zero test
+coverage: URL construction, query parameters, required headers, encoding. Added a
+`client.test.ts` next to each (stubbing `fetch` directly, the same style as the rest of the
+backend's unit tests), then widened `coverage.include` to all of `src/`, excluding only genuinely
+untestable files (`server.ts`, `db/pool.ts`, type-only `types/**` and `**/raw-types.ts`). The
+resulting number — 97.99% statements, 92.18% branches, 100% functions, 98.34% lines — is now an
+honest measurement of real logic, not a number narrowed to look complete.
+
+**Duplicated test fixtures, consolidated rather than left to drift.** Several literals were
+independently reinvented across files: `"http://localhost:3000"` in five web test files, four
+near-identical weather-report builders (`reportWith`, three separate `makeReport`s), a duplicated
+`fakeTokenService()` in two API test files, a JWT-secret literal defined separately in two
+places, and the E2E suite's four stub/dev-server ports hard-coded in both `playwright.config.ts`
+and `stub-servers.ts` with no shared source of truth. Consolidated into `apps/api/test/helpers/
+fixtures.ts` (+ `createFakeTokenService` in the existing `fakes.ts`), `apps/web/src/test/
+fixtures.ts` (with `msw/handlers.ts` now holding only handlers, built from those fixtures), and
+`e2e/fixtures.ts`'s new `PORTS` export. Verified nothing's behavior changed by re-running every
+affected suite before and after — same pass/fail counts throughout.
+
+**Two moderate refactors, done rather than just flagged, with behavior verified unchanged.**
+`useCityData` and `useCityDescription` had independently implemented the same ~40-line
+abort/loading/error/retry state machine; extracted a shared `lib/useAbortableRequest.ts` and
+made both thin wrappers over it. And the backend's `WeatherReport`/`CityDescription` DTOs lived
+in the service files that also imported the clients that produced them, creating a two-way
+import between a client and its service (worked around, before this, with a duplicated inline
+type in `description.service.ts`); moved both into `src/types/`, which both a client and its
+service now import independently. In both cases, the existing test suites — written against the
+public shape, not the internal implementation — needed no changes and still passed unmodified,
+which is the intended evidence that behavior didn't change, only where the logic lives.
+
+**Stale comments and narrative "Stage N" references, rewritten into present-tense documentation**
+across `apps/`, `e2e/`, and `.github/workflows/ci.yml` — this review's own de-staging pass turned
+the README from a stage-by-stage build log (appropriate while the project was in progress) into
+documentation for a finished submission, per Fabio's request. In the process, found and fixed two
+inconsistencies between `AI_USAGE.md` and the README it's meant to summarize: this file's Stage 9
+and Stage 10 entries were dated `2026-09-28`, a day after both stages' actual commits
+(`2026-09-27`, confirmed against `git log`); and there was no entry at all documenting the
+decision to drop Stage 8 (refresh tokens) or the deployment stage — both added above, in their
+correct chronological place.
+
+**Requirements check against the assignment PDF:** every functional requirement is met. The
+gaps were in the deliverables: the README's "Known limitations" section (explicitly required by
+the assignment) and "Trade-offs" section were still `_Coming in Stage 11_` placeholders, along
+with a "work in progress" banner at the top — all written for real as part of this pass.
+Also added `.env.example` files for both apps (variables existed and were documented in the
+README, but there was no copyable template) and a `npm run build` step in CI, which would have
+caught the real Render build failure (documented in the README's deployment section) before a
+live deploy did, had it existed at the time.
+
+**Corrections requested by Fabio:** to keep this log itself consistent with the README it
+summarizes, this file got the same review treatment as the README, rather than only having one
+new entry appended on top of older, unreviewed ones.

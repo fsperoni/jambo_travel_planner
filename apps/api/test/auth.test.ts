@@ -14,6 +14,7 @@ import {
   createFakeWeatherService,
 } from "./helpers/fakes.js";
 import { createTestEnv } from "./helpers/test-env.js";
+import { TEST_USER, UNKNOWN_EMAIL } from "./helpers/fixtures.js";
 
 // Runs the real login flow — Express routing, Zod validation, bcrypt,
 // PostgreSQL — against a real database rather than mocking `pg`, so a
@@ -60,30 +61,30 @@ describe("POST /api/auth/login", () => {
 
   it("returns an access token and the user for valid credentials", async () => {
     const userRepository = createUserRepository(pool);
-    const passwordHash = await hashPassword("correct horse battery staple");
-    await userRepository.create("person@example.com", passwordHash);
+    const passwordHash = await hashPassword(TEST_USER.password);
+    await userRepository.create(TEST_USER.email, passwordHash);
 
     const res = await request(buildApp())
       .post("/api/auth/login")
-      .send({ email: "person@example.com", password: "correct horse battery staple" });
+      .send({ email: TEST_USER.email, password: TEST_USER.password });
 
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({
       accessToken: expect.any(String),
       expiresIn: env.ACCESS_TOKEN_TTL_SECONDS,
-      user: { email: "person@example.com" },
+      user: { email: TEST_USER.email },
     });
     expect(res.body.user.id).toEqual(expect.any(String));
   });
 
   it("accepts the email case-insensitively, since it's normalized to lowercase", async () => {
     const userRepository = createUserRepository(pool);
-    const passwordHash = await hashPassword("correct horse battery staple");
-    await userRepository.create("person@example.com", passwordHash);
+    const passwordHash = await hashPassword(TEST_USER.password);
+    await userRepository.create(TEST_USER.email, passwordHash);
 
     const res = await request(buildApp())
       .post("/api/auth/login")
-      .send({ email: "Person@Example.com", password: "correct horse battery staple" });
+      .send({ email: "Person@Example.com", password: TEST_USER.password });
 
     expect(res.status).toBe(200);
   });
@@ -91,7 +92,7 @@ describe("POST /api/auth/login", () => {
   it("rejects an unknown email with a generic 401", async () => {
     const res = await request(buildApp())
       .post("/api/auth/login")
-      .send({ email: "nobody@example.com", password: "whatever" });
+      .send({ email: UNKNOWN_EMAIL, password: "whatever" });
 
     expect(res.status).toBe(401);
     expect(res.body).toEqual({
@@ -101,12 +102,12 @@ describe("POST /api/auth/login", () => {
 
   it("rejects a wrong password with the same generic 401", async () => {
     const userRepository = createUserRepository(pool);
-    const passwordHash = await hashPassword("the-real-password");
-    await userRepository.create("person@example.com", passwordHash);
+    const passwordHash = await hashPassword(TEST_USER.password);
+    await userRepository.create(TEST_USER.email, passwordHash);
 
     const res = await request(buildApp())
       .post("/api/auth/login")
-      .send({ email: "person@example.com", password: "the-wrong-password" });
+      .send({ email: TEST_USER.email, password: "the-wrong-password" });
 
     expect(res.status).toBe(401);
     expect(res.body.error.message).toBe("Invalid email or password");
@@ -123,16 +124,14 @@ describe("POST /api/auth/login", () => {
   });
 
   it("rejects a missing password field with 400", async () => {
-    const res = await request(buildApp())
-      .post("/api/auth/login")
-      .send({ email: "person@example.com" });
+    const res = await request(buildApp()).post("/api/auth/login").send({ email: TEST_USER.email });
 
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe("VALIDATION_ERROR");
   });
 
-  // A "does the issued token actually work against requireAuth" test lived
-  // here until Stage 4 — it existed only because no protected route existed
-  // yet to test that end-to-end. Now that one does, that coverage lives in
-  // travel.test.ts against the real /api/cities endpoint instead.
+  // A "does the issued token actually work against requireAuth" test used
+  // to live here, back when no protected route existed yet to test that
+  // end-to-end. Now that one does, that coverage lives in travel.test.ts
+  // against the real /api/cities endpoint instead.
 });

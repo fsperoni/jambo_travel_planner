@@ -1,45 +1,26 @@
 import { describe, expect, it, vi } from "vitest";
 import type { OpenMeteoClient } from "../clients/open-meteo/client.js";
 import { ForecastDateOutOfRangeError } from "../errors/app-error.js";
-import { createWeatherService, type DailyForecast, type WeatherReport } from "./weather.service.js";
+import { createWeatherService } from "./weather.service.js";
+import type { WeatherReport } from "../types/weather-report.js";
+import { buildDay, buildWeatherReport } from "../../test/helpers/fixtures.js";
 
-function makeDay(date: string): DailyForecast {
-  return {
-    date,
-    condition: { code: 3, label: "Overcast" },
-    temperatureMax: 20,
-    temperatureMin: 8,
-    precipitationProbabilityMax: 10,
-    sunrise: `${date}T07:00`,
-    sunset: `${date}T19:00`,
-  };
-}
-
+// A 7-day week (today..+6) so both the picker's allowed range
+// (today..+5, via buildWeatherReport's default allowedForecastDates) and
+// the one extra day (today+6 — reachable data that isn't a selectable
+// date, see the boundary test below) are both present.
 function makeReport(): WeatherReport {
-  return {
-    timezone: "America/Edmonton",
-    localDate: "2026-09-25",
-    allowedForecastDates: { min: "2026-09-25", max: "2026-09-30" },
-    units: { temperature: "°C", windSpeed: "km/h", precipitationProbability: "%" },
-    current: {
-      observedAt: "2026-09-25T20:30",
-      temperature: 13.4,
-      feelsLike: 8.9,
-      humidity: 40,
-      windSpeed: 16.1,
-      isDay: false,
-      condition: { code: 2, label: "Partly cloudy" },
-    },
+  return buildWeatherReport({
     week: [
-      makeDay("2026-09-25"),
-      makeDay("2026-09-26"),
-      makeDay("2026-09-27"),
-      makeDay("2026-09-28"),
-      makeDay("2026-09-29"),
-      makeDay("2026-09-30"),
-      makeDay("2026-10-01"),
+      buildDay("2026-09-25"),
+      buildDay("2026-09-26"),
+      buildDay("2026-09-27"),
+      buildDay("2026-09-28"),
+      buildDay("2026-09-29"),
+      buildDay("2026-09-30"),
+      buildDay("2026-10-01"),
     ],
-  };
+  });
 }
 
 describe("weather service", () => {
@@ -70,7 +51,7 @@ describe("weather service", () => {
 
     const result = await service.getWeatherReport(51.0447, -114.0719, "2026-09-27");
 
-    expect(result.selectedDay).toEqual(makeDay("2026-09-27"));
+    expect(result.selectedDay).toEqual(buildDay("2026-09-27"));
     // The rest of the report is untouched — selectedDay is additive.
     expect(result.week).toEqual(report.week);
   });

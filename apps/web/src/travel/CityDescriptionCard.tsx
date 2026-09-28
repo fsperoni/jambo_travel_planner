@@ -24,8 +24,8 @@ export function CityDescriptionCard({ cityDescription }: CityDescriptionCardProp
         </>
       ) : (
         // A missing description is a normal outcome (no Wikipedia article,
-        // or an ambiguous title — see D3 in the project plan), not an
-        // error, so this isn't rendered via ErrorState.
+        // or an ambiguous title — see the README's trade-offs section),
+        // not an error, so this isn't rendered via ErrorState.
         <p className={styles.empty}>No description available for {cityDescription.title}.</p>
       )}
     </section>

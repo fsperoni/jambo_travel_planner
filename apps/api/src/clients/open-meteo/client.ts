@@ -1,12 +1,7 @@
-import { fetchJson } from "../http.js";
-import type { WeatherReport } from "../../services/weather.service.js";
+import { fetchJson, UPSTREAM_TIMEOUT_MS } from "../http.js";
+import type { WeatherReport } from "../../types/weather-report.js";
 import { mapForecastResponse } from "./mapper.js";
 import type { OpenMeteoForecastResponse } from "./raw-types.js";
-
-// Open-Meteo is a free public weather API — comfortably fast in practice;
-// 5s is generous headroom before treating it as unreachable rather than a
-// number tuned against real latency data.
-const REQUEST_TIMEOUT_MS = 5000;
 
 const CURRENT_PARAMS =
   "temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m,is_day";
@@ -37,7 +32,7 @@ export function createOpenMeteoClient(baseUrl: string): OpenMeteoClient {
       url.searchParams.set("daily", DAILY_PARAMS);
 
       const raw = await fetchJson<OpenMeteoForecastResponse>(url.toString(), {
-        timeoutMs: REQUEST_TIMEOUT_MS,
+        timeoutMs: UPSTREAM_TIMEOUT_MS,
       });
       return mapForecastResponse(raw);
     },
