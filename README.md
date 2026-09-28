@@ -3,7 +3,8 @@
 A single-page travel planner built for Jambo's Intermediate Software Developer take-home
 project: pick a city, see a short description, its current weather, and its week-ahead
 forecast — including a forecast for a specific day up to five days out. The app defaults to
-the city closest to your IP address.
+your IP-detected city — matched against the catalogue by exact name and country, not by
+geographic distance; see [IP-based geolocation](#ip-based-geolocation).
 
 ## Table of contents
 
@@ -60,10 +61,9 @@ with hand-written SQL repositories (no ORM), [node-pg-migrate](https://github.co
 for schema migrations, bcrypt for password hashing, `jsonwebtoken` for access tokens, Helmet,
 a CORS allowlist, and `express-rate-limit`.
 
-**Data:** PostgreSQL (`users`, plus `refresh_tokens` if the refresh-token enhancement lands —
-see [Why PostgreSQL](#why-postgresql)),
+**Data:** PostgreSQL (`users` — see [Why PostgreSQL](#why-postgresql)),
 [Open-Meteo](https://open-meteo.com) for weather, the [Wikipedia REST API](https://en.wikipedia.org/api/rest_v1/)
-for city descriptions, [ipapi.co](https://ipapi.co) for IP geolocation.
+for city descriptions, [ipwho.is](https://ipwhois.io) for IP geolocation.
 
 **Testing:** [Vitest](https://vitest.dev) (backend unit tests), [Supertest](https://github.com/ladjs/supertest)
 against a real PostgreSQL instance (integration tests), [React Testing Library](https://testing-library.com/react)
@@ -106,15 +106,16 @@ and understand end to end.
 
 The travel/weather data itself doesn't need persistence — it's fetched fresh from Open-Meteo
 and Wikipedia on every request. PostgreSQL exists specifically because authentication benefits
-from real persistence (a `users` table, and later `refresh_tokens` if that enhancement lands),
-and because it's the database named in the job description. There's deliberately no `cities`,
-`travel_history`, or `favourites` table — see the `users`-only schema note under
-[Database / migrations](#database-migrations) for why.
+from real persistence (a `users` table), and because it's the database named in the job
+description. There's deliberately no `cities`, `travel_history`, or `favourites` table — see
+the `users`-only schema note under [Database / migrations](#database-migrations) for why. A
+`refresh_tokens` table was designed but never built — see
+[What I'd improve with more time](#what-id-improve-with-more-time).
 
 `pg` with small, hand-written SQL repositories is used instead of an ORM. At this project's
-size — two tables, at most — an ORM's main value (managing complex relations, generating
-queries across many entities) doesn't apply, and hand-written SQL means every query is
-something I wrote and can explain line by line rather than something an ORM generated. The
+size — one table — an ORM's main value (managing complex relations, generating queries across
+many entities) doesn't apply, and hand-written SQL means every query is something I wrote and
+can explain line by line rather than something an ORM generated. The
 trade-off: no automatic query building or migration-from-model generation; `node-pg-migrate`
 handles schema migrations separately (see below), and each repository method is a plain SQL
 string with parameterized values.
@@ -144,15 +145,23 @@ information in it, intended for local development only. Wikipedia's text is CC B
 which requires attribution back to the source — the app shows a "Read more on Wikipedia" link
 using the response's own canonical `content_urls.desktop.page` URL.
 
-**IP geolocation: [ipapi.co](https://ipapi.co).** HTTPS with no API key required (a real
+**IP geolocation: [ipwho.is](https://ipwhois.io).** HTTPS with no API key required (a real
 requirement here, unlike weather or description: the client's IP is sent to this provider, and
-that shouldn't happen over plain HTTP). The alternative considered, per the project plan, was
+that shouldn't happen over plain HTTP), 1,000 requests/day, and its terms explicitly allow
+commercial/production use. The alternative considered, per the project plan, was
 [ip-api.com](https://ip-api.com) — its free tier is HTTP-only, which was disqualifying on its
-own. ipapi.co's own validation already rejects reserved/private/invalid addresses with a
+own. ipwho.is's own validation already rejects reserved/private/invalid addresses with a
 documented error shape, so this app doesn't need its own IP-range classification logic — see
-[IP-based geolocation](#ip-based-geolocation). Its free tier's request quota turned out to be a
-real, not just theoretical, constraint while building this: it was already exhausted (a live 429) from two independent networks during development, which is exactly the "provider
-unavailable" case the default-city fallback below exists for.
+[IP-based geolocation](#ip-based-geolocation).
+
+This app originally used [ipapi.co](https://ipapi.co) and switched during a later review pass:
+its free tier's request quota turned out to be a real, not just theoretical, constraint —
+already exhausted (a live 429) from two independent networks during initial development, which
+is exactly the "provider unavailable" case the default-city fallback below exists for — and,
+more importantly, ipapi.co's own pricing terms state its free tier is _"suitable for testing /
+development"_ and _"not meant for use in production or deployments"_, which the deployed app
+was already violating regardless of quota. ipwho.is's terms explicitly permit the deployed use
+this app actually needs.
 
 ## Architecture overview
 
@@ -173,14 +182,14 @@ and `clients/ip-geolocation/` follow the identical pattern for their own upstrea
 `WeatherReport`/`CityDescription` DTO types live in `src/types/`, imported by both a client
 (which produces one) and its service (which consumes it), rather than one importing the other.
 
-**A provider's own "couldn't do this" response is data, not an exception.** ipapi.co has an
-unusual quirk, confirmed against its own documentation and a live 429: a genuine outage/rate
-limit is a normal HTTP error status, but "this IP is reserved" or "this IP is invalid" both come
-back as HTTP 200 with an `{error: true, reason: "..."}` body. `clients/ip-geolocation/mapper.ts`
-has to read the parsed body to catch those, not just rely on `fetchJson`'s HTTP-status-based
-error handling — the same "collapse every non-error 'nothing to show' outcome to one `null`"
-shape as the Wikipedia mapper's disambiguation/404 handling, so `location.service.ts` doesn't
-need to know or care which specific reason a provider gave, only that it has nothing usable.
+**A provider's own "couldn't do this" response is data, not an exception.** ipwho.is has the
+same quirk the previous provider (ipapi.co) did, confirmed live against this provider too: "this
+IP is reserved" comes back as HTTP 200 with a `{success: false, message: "..."}` body, not a
+non-2xx status. `clients/ip-geolocation/mapper.ts` has to read the parsed body to catch this,
+not just rely on `fetchJson`'s HTTP-status-based error handling — the same "collapse every
+non-error 'nothing to show' outcome to one `null`" shape as the Wikipedia mapper's
+disambiguation/404 handling, so `location.service.ts` doesn't need to know or care which
+specific reason a provider gave, only that it has nothing usable.
 
 **`fetchJson`'s "not found" handling is opt-in, via a type-level flag.** `clients/http.ts`
 exposes a `notFoundReturnsNull` option, typed with two overloads so its return type tracks the
@@ -433,7 +442,7 @@ other implementation detail to the client.
 **IP handling:**
 
 - A visitor's IP address is personal data under most privacy frameworks (e.g. GDPR) even though
-  it's used only transiently, in memory, to ask ipapi.co for a city — it's never written to the
+  it's used only transiently, in memory, to ask ipwho.is for a city — it's never written to the
   database, never persisted anywhere, and the one place a lookup failure is logged
   (`location.service.ts`'s `console.warn`) deliberately logs the failure reason, not the IP that
   caused it. (No consent prompt is shown for this: the lawful basis is that the lookup is
@@ -502,9 +511,9 @@ request in `test/travel.test.ts`, not just reasoned about.
 `normalizeIp` strips the `::ffff:` prefix Node adds to an IPv4 address on a dual-stack socket,
 and `isLoopback` recognizes `127.0.0.1`/`::1` — a request from the same machine as the server has
 no real client IP to geolocate, so `location.service.ts` returns the default city with reason
-`"local-development"` immediately, without ever calling ipapi.co.
+`"local-development"` immediately, without ever calling ipwho.is.
 
-**Matching the provider's answer to the catalogue.** ipapi.co returns a free-text city name and
+**Matching the provider's answer to the catalogue.** ipwho.is returns a free-text city name and
 an ISO country code, which won't necessarily agree with this app's own `name` field on
 diacritics or casing (e.g. "Sao Paulo" vs. "São Paulo", or "Sibenik" vs. "Šibenik" — see the
 catalogue's own diacritic city, added and verified for exactly this reason).
@@ -513,11 +522,13 @@ catalogue's own diacritic city, added and verified for exactly this reason).
 one of the catalogue's ~10, the backend synthesizes a one-off `{id: "detected", ...}` city from
 the provider's own coordinates and name, which the frontend inserts at the top of the dropdown
 rather than forcing a match against a small curated list — a real location that just isn't
-pre-curated shouldn't be treated as a lookup failure.
+pre-curated shouldn't be treated as a lookup failure. Matching is by name + country only, not
+distance — see [Known limitations](#known-limitations) for the real edge case that creates and
+why a distance check wasn't added instead.
 
-**Every other failure looks identical from the outside.** A genuine ipapi.co outage or rate
-limit (`UpstreamError`, a real non-2xx/timeout) and the provider's own `{error: true, reason:
-"..."}` body for a reserved/invalid IP (see [Architecture overview](#architecture-overview) for
+**Every other failure looks identical from the outside.** A genuine ipwho.is outage or rate
+limit (`UpstreamError`, a real non-2xx/timeout) and the provider's own `{success: false,
+message: "..."}` body for a reserved/invalid IP (see [Architecture overview](#architecture-overview) for
 why that needs its own handling) both map to the same `source: "default", reason:
 "lookup-failed"` — there's no caller that would do anything differently with a more specific
 reason. A failure is logged server-side (`console.warn`, not `console.error` — this is an
@@ -604,7 +615,7 @@ range (the server), not guessed at by the client.
 | ----------------------------------------------------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET /health`                                                     | none               | `{ "status": "ok" }` — used by the hosting platform's health check                                                                                                                                                                  |
 | `POST /api/auth/login`                                            | none, rate-limited | `{email,password}` → `200 {accessToken, expiresIn, user}`; 400 bad body; 401 invalid credentials                                                                                                                                    |
-| `GET /api/cities`                                                 | Bearer             | `200 City[]`, sorted alphabetically by name — the static catalogue, see [Database / migrations](#database-migrations)                                                                                                               |
+| `GET /api/cities`                                                 | Bearer             | `200 City[]`, sorted alphabetically by name — the static catalogue, see [Database / migrations](#database-migrations) and the city-list interpretation under [Trade-offs](#trade-offs)                                              |
 | `GET /api/weather?latitude={n}&longitude={n}[&date={YYYY-MM-DD}]` | Bearer             | `200 WeatherReport`; 400 invalid/out-of-range coordinates or a malformed/nonexistent `date`; 400 `FORECAST_DATE_OUT_OF_RANGE` for a real date outside `allowedForecastDates` (range in `details`); 502/504 on an Open-Meteo failure |
 | `GET /api/city-description?title={string}`                        | Bearer             | `200 CityDescription`; missing/disambiguation page → `200` with `description: null` (not an error); 400 missing title; 502/504 on a Wikipedia failure                                                                               |
 | `GET /api/location`                                               | Bearer             | `200 DetectedLocation`; every detection failure (local dev, provider outage/rate-limit, an IP it can't place) is a `200` fallback, never an error, see [IP-based geolocation](#ip-based-geolocation)                                |
@@ -612,6 +623,11 @@ range (the server), not guessed at by the client.
 Every route except `/health` and `/api/auth/login` requires a valid `Authorization: Bearer`
 header. Every error response uses the same envelope:
 `{ "error": { "code": "SOME_CODE", "message": "...", "details"?: [...] } }`.
+
+**Two more error codes apply ahead of any route**, from `express.json()` itself rather than a
+specific endpoint: a literally malformed request body → `400 INVALID_JSON`, and a body over the
+10kb limit → `413 PAYLOAD_TOO_LARGE`. Both used to fall through to a generic `500` before a
+review pass caught it — see `middleware/error-handler.ts` and `AI_USAGE.md`.
 
 **`WeatherReport`** (see `services/weather.service.ts` for the exact TypeScript types):
 `{ timezone, localDate, allowedForecastDates: {min, max}, units, current: {observedAt,
@@ -638,24 +654,31 @@ mode still returns `200`.
 ## Local setup
 
 ```bash
-npm install               # installs both apps' dependencies (npm workspaces)
+npm ci                     # installs the exact, lockfile-pinned dependencies (both workspaces)
+
+# Exported once, for the rest of this terminal session — an inline
+# `VAR=value command` prefix only sets that variable for the one command it
+# precedes, not for anything run afterward, which is why `npm test` further
+# down needs this rather than just the migration commands above it.
+export DATABASE_URL=postgres://localhost/jambo_dev
+export TEST_DATABASE_URL=postgres://localhost/jambo_test
+export JWT_SECRET=local-dev-jwt-secret-at-least-32-characters-long
 
 # One-time local database setup (any PostgreSQL 16+ works):
 createdb jambo_dev
 createdb jambo_test
-DATABASE_URL=postgres://localhost/jambo_dev npm run db:migrate -w @jambo/api
-TEST_DATABASE_URL=postgres://localhost/jambo_test npm run db:migrate:test -w @jambo/api
+npm run db:migrate -w @jambo/api
+npm run db:migrate:test -w @jambo/api
 
 # Seed a local user (SEED_USERS format: "email1:password1,email2:password2"):
-DATABASE_URL=postgres://localhost/jambo_dev SEED_USERS="demo@example.com:demopassword123" \
-  npm run db:seed -w @jambo/api
+SEED_USERS="demo@example.com:demopassword123" npm run db:seed -w @jambo/api
 
 npm run lint
 npm run typecheck
-npm test
+npm test                   # needs TEST_DATABASE_URL, exported above
 
 cd apps/api
-npm run dev                # starts the API on http://localhost:3000
+npm run dev                # starts the API on http://localhost:3000; needs JWT_SECRET, also exported above
 ```
 
 In a second terminal:
@@ -671,10 +694,13 @@ the backend's default CORS allowlist (`http://localhost:5173`) already match eac
 the box.
 
 Requires Node.js 24+ (see `.nvmrc`). `npm run dev` and `npm run db:seed` both pick up a local
-`.env` file automatically if one exists (`--env-file-if-exists`); it's entirely optional — the
-commands above work with env vars passed inline instead, which is what CI does. `apps/api/.env.example`
-and `apps/web/.env.example` list every variable each app reads, with safe placeholder values —
-copy either to `.env` in the same directory as a starting point.
+`apps/api/.env` file automatically if one exists (`--env-file-if-exists`) — an alternative to the
+`export`s above for anyone who'd rather not repeat them in every new terminal; `npm test` and the
+migration scripts don't read `.env` (they're plain `vitest`/`node-pg-migrate`, with no dotenv
+loading — a deliberate choice, see `AI_USAGE.md`), so they still need the variables actually in
+the shell's environment either way. `apps/api/.env.example` and `apps/web/.env.example` list
+every variable each app reads, with safe placeholder values — copy either to `.env` in the same
+directory as a starting point.
 
 ## Environment variables
 
@@ -692,7 +718,7 @@ start if one is missing or malformed, with a message naming the offending variab
 | `OPEN_METEO_BASE_URL`      | no       | `https://api.open-meteo.com`                   | Base URL for the weather client — overridden in integration tests to point at a local stub, never at the real API                                                                                                                                                                  |
 | `WIKIPEDIA_BASE_URL`       | no       | `https://en.wikipedia.org`                     | Base URL for the description client — same overridable-for-tests reasoning as `OPEN_METEO_BASE_URL`                                                                                                                                                                                |
 | `WIKIPEDIA_USER_AGENT`     | no       | a local-dev-only placeholder, no personal info | Sent as the `User-Agent` header on every Wikipedia request, per [Wikimedia's policy](https://foundation.wikimedia.org/wiki/Policy:Wikimedia_Foundation_User-Agent_Policy) — set this to a real contact URL for production; see [Why these external APIs](#why-these-external-apis) |
-| `IP_GEOLOCATION_BASE_URL`  | no       | `https://ipapi.co`                             | Base URL for the IP-geolocation client — same overridable-for-tests reasoning as the other two base URLs                                                                                                                                                                           |
+| `IP_GEOLOCATION_BASE_URL`  | no       | `https://ipwho.is`                             | Base URL for the IP-geolocation client — same overridable-for-tests reasoning as the other two base URLs                                                                                                                                                                           |
 | `DEFAULT_CITY_ID`          | no       | `calgary`                                      | The city shown when IP detection can't run or doesn't produce a usable result — must be a real id in `domain/city-catalogue.ts`, checked at startup; see [IP-based geolocation](#ip-based-geolocation)                                                                             |
 | `TRUST_PROXY_HOPS`         | no       | `0`                                            | Reverse-proxy hop count for Express's `trust proxy` setting; `0` for local dev (no proxy), `1` in production behind Render's own load balancer — see [IP-based geolocation](#ip-based-geolocation) for what this number actually does and why it was verified empirically          |
 
@@ -819,10 +845,10 @@ actually be wrong.
 - **IP geolocation:** `domain/client-ip.ts` (the `::ffff:` prefix stripped, plain IPv4/IPv6 left
   alone, both loopback forms recognized) and `domain/normalize-city-name.ts` (diacritics
   stripped, case-insensitive, confirmed to make "Sao Paulo"/"São Paulo" and "Sibenik"/"Šibenik"
-  compare equal); `clients/ip-geolocation/mapper.ts`, covering ipapi.co's own `{error: true}`
+  compare equal); `clients/ip-geolocation/mapper.ts`, covering ipwho.is's own `{success: false}`
   body alongside a "successful" response missing a field it needs — both collapse to the same
-  `null`, on purpose, the same way Wikipedia's disambiguation/404 cases do; the ipapi.co client
-  itself (`client.test.ts`) — IPv6 address encoding in the request URL and the `{error: true}`
+  `null`, on purpose, the same way Wikipedia's disambiguation/404 cases do; the ipwho.is client
+  itself (`client.test.ts`) — IPv6 address encoding in the request URL and the `{success: false}`
   body mapping to `null` rather than throwing; and `location.service.ts`'s full decision tree
   with a fake client — loopback short-circuits before the client is ever called (asserted
   directly, not just inferred from the result), a thrown error and a mapped `null` both land on
@@ -861,8 +887,10 @@ Coverage (`npm run test:coverage`) covers all of `src/`, excluding only files wi
 to get wrong: `server.ts` (the composition root — `.listen()` and wiring, exercised by the
 integration suite via `createApp()` rather than by a unit test of its own), `db/pool.ts` (a
 one-line `pg.Pool` constructor call), and type-only files (`types/**`, `**/raw-types.ts`). At
-last count: **97.99% statements, 92.18% branches, 100% functions, 98.34% lines** — see the
-project's testing matrix for the full requirement-to-test mapping.
+last count: **98.11% statements, 92.46% branches, 100% functions, 98.43% lines** — see the
+project's testing matrix for the full requirement-to-test mapping. `vitest.config.ts` also
+enforces a floor (90% statements/lines/functions, 85% branches) so `npm run test:coverage` fails
+CI on a real regression, comfortably below the actual numbers rather than chasing 100%.
 
 **Frontend tests** use React Testing Library and [MSW](https://mswjs.io) to intercept `fetch`
 at the network level rather than mocking `fetch` itself or the API-client functions — a request
@@ -961,8 +989,10 @@ made the test fail with a clear, real diff between expected and rendered text, t
 clean again once reverted.
 
 Frontend coverage (`npm run test:coverage -w @jambo/web`), same scoping philosophy as the
-backend's (real logic, not boilerplate): at last count, **97.53% statements, 92.99% branches,
-96.47% functions, 98.65% lines**.
+backend's (real logic, not boilerplate — an explicit `include`/`exclude` in `vite.config.ts`
+keeps test fixtures and MSW handlers themselves out of the denominator): at last count, **97.4%
+statements, 92.94% branches, 96.15% functions, 98.57% lines**, with the same style of enforced
+floor (90%/85%/90%/90%) as the backend.
 
 ## Deployment architecture
 
@@ -973,7 +1003,7 @@ flowchart LR
   R --> N[("Neon: PostgreSQL")]
   R --> OM["Open-Meteo"]
   R --> WK["Wikipedia"]
-  R --> IP["ipapi.co"]
+  R --> IP["ipwho.is"]
 ```
 
 Three free tiers, each on its own default domain (`*.vercel.app`, `*.onrender.com`,
@@ -1003,14 +1033,23 @@ running process still reports `NODE_ENV=production` correctly.
 - **Build Command:** `npm install --include=dev && npm run build -w @jambo/api`
 - **Start Command:** `npm run start -w @jambo/api`
 
-**`TRUST_PROXY_HOPS=1` in production, verified against the real deployment, not just locally.**
-Render sits exactly one reverse proxy in front of this app, matching the hop count the
-[IP-based geolocation](#ip-based-geolocation) section's empirical verification was built for.
-Confirmed for real once deployed: a request through Render's real proxy chain resolves to
-`source: "default", reason: "lookup-failed"` from `/api/location` (a real external IP correctly
-recognized as _not_ loopback, whose provider lookup then failed gracefully) — not
-`reason: "local-development"`, which is what a misconfigured hop count that collapsed every
-request to an internal address would have produced instead.
+**`TRUST_PROXY_HOPS=1` in production.** Render sits exactly one reverse proxy in front of this
+app, matching the hop count the [IP-based geolocation](#ip-based-geolocation) section's
+empirical local verification was built for. An earlier version of this section claimed a
+`source: "default", reason: "lookup-failed"` response from a real deployed request proved the
+hop count was correct — that claim was wrong, and worth recording rather than quietly fixing:
+a request through Render's real proxy chain does return `lookup-failed`, but that observation
+alone is ambiguous. It's also exactly what a _too-low_ hop count would produce: Express would
+then resolve `req.ip` to Render's own internal proxy address rather than the real visitor's,
+which isn't loopback (so `isLoopback()` doesn't short-circuit it into `"local-development"`) but
+_is_ a private/reserved address, which the geolocation provider correctly rejects — landing on
+the same `"lookup-failed"` reason a genuine provider outage would. The one check that actually
+distinguishes "hop count is right, the provider failed" from "hop count is wrong" is a request
+with a spoofed `X-Forwarded-For` header: `/api/location` should return the real visitor's city
+regardless of what a client claims in that header (correct — Render's own proxy is trusted, a
+client's claim isn't), not the spoofed address's city (would mean too many hops are trusted) and
+not a fallback either (would mean too few). This is a manual check against the live deployment,
+outside what any automated test in this repository can verify.
 
 **Environment variables actually set on Render** (see [Environment variables](#environment-variables)
 for what each one does): `NODE_ENV=production`, `DATABASE_URL` (Neon's pooled connection
@@ -1032,15 +1071,30 @@ against any reachable PostgreSQL connection string.
 ## AI usage
 
 Development uses **Claude Code (Anthropic)** as the primary coding assistant — planning,
-scaffolding, implementation, tests, and code review throughout — and, at times, **ChatGPT** for
-secondary review of specific decisions, disclosed here per the assignment's AI use policy.
-A running, dated log of what was AI-assisted and how is kept in [`AI_USAGE.md`](./AI_USAGE.md):
-what each stage of work covered, real mistakes it made and how they were caught (a Mermaid
-diagram that failed to parse, `Express 5`'s `req.query` becoming read-only, a `credentials: true`
-CORS option added for a feature later dropped, a coverage-scope blind spot that hid three
-untested upstream clients, duplicated test fixtures found during this review), and the specific
-numbers behind claims made in this README (the WCAG contrast failures' before/after ratios, test
-counts, coverage percentages).
+scaffolding, implementation, tests, and code review throughout — **ChatGPT** at times for
+secondary review of specific decisions, and, in a dedicated pre-submission pass, **OpenAI
+Codex** for an independent adversarial review of the finished codebase, all disclosed here per
+the assignment's AI use policy. A running, dated log of what was AI-assisted and how is kept in
+[`AI_USAGE.md`](./AI_USAGE.md): what each stage of work covered, real mistakes it made and how
+they were caught (a Mermaid diagram that failed to parse, `Express 5`'s `req.query` becoming
+read-only, a `credentials: true` CORS option added for a feature later dropped, a coverage-scope
+blind spot that hid three untested upstream clients, duplicated test fixtures found during
+review), and the specific numbers behind claims made in this README (the WCAG contrast failures'
+before/after ratios, test counts, coverage percentages).
+
+**The Codex review pass, specifically:** Codex reviewed the repository independently and wrote
+up its findings; I then verified every claim myself — reproducing each reported bug against the
+real code and the real live providers, not accepting the report at face value — before deciding
+what to fix, what to only document, and what to skip. Codex's review found one real, previously
+undetected functional gap (the deployed app's IP-geolocation provider turned out to forbid
+production use in its own terms — see [Known limitations](#known-limitations) and
+[Why these external APIs](#why-these-external-apis)) and several real edge-case bugs
+(blank/malformed coordinate input, a malformed request body producing a 500 instead of a 400, a
+timezone-formatting function that broke specifically at a daylight-saving transition), plus one
+bug in a fix I'd made in an earlier review pass myself. The full response to that review —
+including two places where I corrected or pushed back on a claim in Codex's own report after
+verifying it independently — is logged in `AI_USAGE.md`'s "Codex review response" entry, not
+reproduced here.
 
 I reviewed every line for correctness and understanding before accepting it, and I'm prepared to
 explain and defend any part of this codebase in the technical walkthrough — including which
@@ -1068,17 +1122,35 @@ Honestly stated gaps and constraints in this submission, as built:
   period of inactivity can take significantly longer than normal — `LoginPage` shows a
   reassuring notice once a login attempt has been slow for a few seconds, but the delay itself
   isn't eliminated.
-- **ipapi.co's free-tier quota is shared and can be exhausted** (witnessed firsthand — a real
-  `429` — from two independent networks while building this). When that happens, location
-  detection falls back to the default city, honestly labelled as a fallback, not a false
-  detection.
+- **ipwho.is's free-tier quota (1,000 requests/day) is shared across whatever else uses Render's
+  outbound IP**, not per visitor to this app — a busy day, or Render sharing that IP with other
+  tenants, could exhaust it. The previous provider (ipapi.co)'s quota really was exhausted this
+  way during development, witnessed firsthand as a real `429` from two independent networks —
+  which is also why it was replaced; see [Why these external APIs](#why-these-external-apis).
+  Either way, exhaustion falls back to the default city, honestly labelled as a fallback, not a
+  false detection.
 - **IP-based location detection can be inaccurate on cellular networks** specifically, since a
   carrier's gateway location doesn't always correspond to the device's actual location — see
   [What I'd improve with more time](#what-id-improve-with-more-time) for the device-geolocation
   alternative considered.
-- **City matching is exact (name + country code), not fuzzy or distance-based.** A detected
-  location whose provider-given name doesn't match the catalogue (after diacritic/case
-  normalization) is shown as a one-off entry rather than merged with a near-miss catalogue city.
+- **City matching is exact (name + country code), not fuzzy or distance-based — and can match
+  the wrong same-named city within one country.** A detected location whose provider-given name
+  doesn't match any catalogue city (after diacritic/case normalization) is shown as a one-off
+  entry rather than forced onto a near-miss. The real edge case this creates: two cities can
+  share both a name _and_ a country (e.g. more than one "Vancouver" in Canada, in different
+  provinces) — matching by name + country alone, with no region or coordinate check, would
+  return the catalogue's Vancouver (British Columbia) even for a detected location that's
+  actually a different, same-named Canadian city entirely. A distance/region check was
+  considered and deliberately not added — see
+  [Trade-offs](#trade-offs) for why an arbitrary distance threshold was rejected during planning
+  for the same reasoning that keeps IP-range classification out of this app.
+- **A dynamically detected city's Wikipedia link is a best-effort guess, not a verified match.**
+  For a detected city already in the catalogue, `wikipediaTitle` is hand-curated and verified —
+  see [Why these external APIs](#why-these-external-apis). For one that isn't (a real location
+  outside the curated ~10), the backend guesses the provider's own city name as the Wikipedia
+  title (`services/location.service.ts`). If that name doesn't resolve to the right article — or
+  to any article — the description card shows its normal empty state, not a wrong description;
+  it's a missing/best-effort result, never silently incorrect content.
 - **No persistence for cities, favourites, or travel history.** The city catalogue is a small,
   static, version-controlled list (~10 cities) — see [Database / migrations](#database-migrations)
   for why that's a deliberate choice, not an oversight.
@@ -1095,6 +1167,18 @@ Design decisions made deliberately, with an alternative considered and set aside
 explained in full where linked; this section is a scannable index of all of them together, since
 that's explicitly one of the discussion topics for the technical walkthrough.
 
+- **The city list is a static, in-code catalogue, not resolved through an external API at
+  runtime.** The assignment asks for information on the frontend to come from the backend, and
+  the backend to get that information from an external public API — read strictly, the catalogue
+  itself (city names, coordinates) is an exception: every piece of information _about_ a selected
+  city (its description, weather, and the IP-detected default) does come from an external API
+  through the backend, but the list of ~10 selectable cities is a version-controlled constant.
+  The alternative — resolving those same ~10 coordinates through a geocoding API (e.g.
+  Open-Meteo's own geocoding endpoint) at startup or per-request — was considered and rejected:
+  it adds a real dependency and a cache-or-refetch decision for data that never changes, to
+  satisfy the letter of a requirement whose evident intent (don't hardcode weather/description
+  data the assignment explicitly wants fetched live) the static catalogue doesn't violate. Stated
+  here explicitly as an interpretation, not implied as literal compliance.
 - **React over Angular** (and **Express over NestJS**) — see
   [Why React instead of Angular](#why-react-instead-of-angular) and [Why Express](#why-express).
 - **Token storage: in-memory JWT + Bearer header, not `localStorage` or a refresh cookie** — see
@@ -1119,8 +1203,10 @@ that's explicitly one of the discussion topics for the technical walkthrough.
   [IP-based geolocation](#ip-based-geolocation).
 - **Relying on `trust proxy` + the provider's own validation + a graceful fallback, instead of
   hand-rolled IP-range classification** — see [IP-based geolocation](#ip-based-geolocation).
-- **ipapi.co over ip-api.com** — see [Why these external APIs](#why-these-external-apis); the
-  latter's free tier is HTTP-only, disqualifying for sending a real client IP.
+- **ipwho.is over ip-api.com (and over ipapi.co, switched to later)** — see
+  [Why these external APIs](#why-these-external-apis); ip-api.com's free tier is HTTP-only,
+  disqualifying for sending a real client IP, and ipapi.co's own terms forbid production/
+  deployed use on its free tier.
 - **Rate limiting only on login, not a general API limiter** — see
   [Security considerations](#security-considerations).
 - **Caching considered and deliberately not built** — see
@@ -1163,11 +1249,11 @@ to function at all.
 (see [Trade-offs](#trade-offs)), but the design was thought through: an in-memory `Map` keyed by
 the request's own parameters, with a TTL chosen per how often each value actually changes —
 
-| Cached call               | Cache key                                                                                  | TTL         | Why that TTL                                                                                                                                                                                                                                                             |
-| ------------------------- | ------------------------------------------------------------------------------------------ | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Weather (Open-Meteo)      | `latitude,longitude` (rounded — the same city is always requested at the same coordinates) | ~10 minutes | Weather itself doesn't meaningfully change minute to minute, and this is the call most likely to get rate-limited under real traffic (confirmed firsthand during deployment verification — Open-Meteo's own free tier returned a real `503 "The service is overloaded"`) |
-| Description (Wikipedia)   | the requested `title`                                                                      | ~24 hours   | Article text changes rarely; there's no reason to re-fetch the same city's description more than about once a day                                                                                                                                                        |
-| IP geolocation (ipapi.co) | the normalized client IP                                                                   | ~24 hours   | A given IP's city rarely changes within a day, and this is the upstream with the tightest free-tier quota — confirmed firsthand too (ipapi.co's free tier was already exhausted, a real `429`, from two independent networks while building IP-based location detection) |
+| Cached call               | Cache key                                                                                  | TTL         | Why that TTL                                                                                                                                                                                                                                                                                                     |
+| ------------------------- | ------------------------------------------------------------------------------------------ | ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Weather (Open-Meteo)      | `latitude,longitude` (rounded — the same city is always requested at the same coordinates) | ~10 minutes | Weather itself doesn't meaningfully change minute to minute, and this is the call most likely to get rate-limited under real traffic (confirmed firsthand during deployment verification — Open-Meteo's own free tier returned a real `503 "The service is overloaded"`)                                         |
+| Description (Wikipedia)   | the requested `title`                                                                      | ~24 hours   | Article text changes rarely; there's no reason to re-fetch the same city's description more than about once a day                                                                                                                                                                                                |
+| IP geolocation (ipwho.is) | the normalized client IP                                                                   | ~24 hours   | A given IP's city rarely changes within a day, and this is the upstream with the tightest free-tier quota (1,000/day, shared across whatever else uses Render's outbound IP) — the previous provider's free tier was witnessed exhausted this way firsthand (a real `429`), which is part of why it was replaced |
 
 The reason this stayed out rather than getting built anyway: a per-process `Map` is trivial for
 a single Render instance (this deployment), but wouldn't be correct behavior with more than one
@@ -1186,6 +1272,6 @@ accepted stand-in for now.
 currently no account management at all beyond the seeded demo user); per-user/per-IP API rate
 limits, not just the login rate limiter; a °C/°F toggle; an hourly (not just daily) forecast for
 the selected day; a tuned Content-Security-Policy beyond Helmet's defaults; a second IP
-geolocation provider as a fallback when ipapi.co's own quota is exhausted; and, if the two apps'
+geolocation provider as a fallback when ipwho.is's own quota is exhausted; and, if the two apps'
 shared types ever grow past the current handful of interfaces, a shared contract package (or
 generated OpenAPI client) instead of the current duplicated-by-hand types.

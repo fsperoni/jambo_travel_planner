@@ -9,9 +9,14 @@ import rateLimit from "express-rate-limit";
  * depends on Express's `trust proxy` setting (config/env.ts's
  * TRUST_PROXY_HOPS) matching the actual proxy chain in front of the app —
  * confirmed against the real Render deployment (hops=1), not just assumed.
- * If that number were ever wrong, this limiter would fail safe: every
- * request behind the proxy would look like it comes from the same IP,
- * making it overly strict (shared across all users) rather than unsafe.
+ * Getting that number wrong doesn't fail safe in either direction: too few
+ * trusted hops makes every request behind the proxy look like it comes
+ * from the same IP, merging unrelated users into one shared limit (overly
+ * strict, but not a security hole); too many trusts a client-supplied
+ * `X-Forwarded-For` value the client fully controls, letting an attacker
+ * claim a fresh IP on every request and bypass the limit entirely (a real
+ * spoofing vector, not merely inconvenient) — see the README's IP-based
+ * geolocation section for the same setting explained in more depth.
  */
 export const loginRateLimit = rateLimit({
   windowMs: 15 * 60 * 1000,

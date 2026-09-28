@@ -12,6 +12,9 @@ explicitly - those are usually the more interesting parts of this log.
 - **Claude Code** - primary assistant for planning, scaffolding, implementation,
   and code review throughout this project.
 - **ChatGPT** - used ad hoc for secondary review of specific decisions where noted.
+- **OpenAI Codex** - used for one dedicated, independent adversarial review pass near
+  submission (see the 2026-09-27 "Codex review response" entry below), separate from
+  Claude Code's own day-to-day work.
 
 ## 2026-09-24 - Planning
 
@@ -951,3 +954,86 @@ live deploy did, had it existed at the time.
 **Corrections requested by Fabio:** to keep this log itself consistent with the README it
 summarizes, this file got the same review treatment as the README, rather than only having one
 new entry appended on top of older, unreviewed ones.
+
+## 2026-09-27 - Codex review response: IP provider switch, real edge-case fixes, and three corrections to my own initial assessment
+
+**Tool:** Claude Code, responding to a separate OpenAI Codex review Fabio requested. Codex wrote
+up its findings in a local working document; my own item-by-item assessment of that review (what
+to implement, what to only document, what to skip, and why) was written up the same way. Neither
+document is committed to this repository — both were local, working artifacts for this pass, not
+submission deliverables — so this entry is the durable record of that review instead.
+
+**Every claim in Codex's report was independently reproduced before being trusted, not accepted
+on the report's word alone:** `z.coerce.number()` turning `""`/`"  "` into `0`, confirmed with a
+throwaway Zod script; `formatLocalTime`'s DST-gap bug, confirmed by running the actual function
+under `TZ=America/Edmonton` (this environment's own default zone, as it happens) and getting
+"3:30 AM" for a string that says "02:30"; `errorHandler` mapping `express.json()`'s own errors to
+a 500, confirmed with a real Express app and a real malformed-JSON request; and, most
+importantly, ipapi.co's pricing page stating its free tier is _"not meant for use in production
+or deployments"_ — confirmed by fetching the page directly — combined with a fresh `curl` to the
+live API returning a real `429` that same day. That last one meant the deployed app had likely
+never successfully detected a real visitor's location at all, not just occasionally hit a quota.
+
+**Three corrections Fabio made to an earlier draft of my own assessment, before any code was
+written, recorded honestly rather than smoothed over:**
+
+1. **The timeout fix I'd planned (`err.name === "TimeoutError"` in `response.json()`'s catch)
+   was too narrow.** I'd verified it worked on this runtime with a real stalled-body repro, but
+   Fabio pointed out the rejection's exact shape isn't spec-guaranteed for every engine/consumer.
+   Fixed by checking the shared `AbortSignal`'s own state (guaranteed by spec once it fires)
+   instead, with the error's own shape kept as a fallback specifically so existing tests that
+   stub `fetch()` directly — never touching the real signal — still pass. Implementing this
+   exposed a real regression of my own: the signal-only version broke an existing test
+   ("throws a 504 UpstreamError when the request times out"), caught immediately by running the
+   suite, not discovered later.
+2. **"Trim the coordinate string" wasn't the actual fix.** `""` still coerces to `0` after
+   trimming — the fix needed to explicitly reject the empty string (and, once actually testing
+   edge cases, "0x10" and "1e1", which `Number()` also happily parses as 16 and 10). Landed on a
+   `.trim().regex(/^-?\d+(\.\d+)?$/)` check before any numeric conversion at all.
+3. **`lookup-failed` from the deployed app does not prove `TRUST_PROXY_HOPS` is configured
+   correctly**, and an earlier version of this assessment (and the README) claimed it did. A
+   too-low hop count resolves `req.ip` to Render's own private proxy address instead of the real
+   visitor's — not loopback, so it doesn't short-circuit into `"local-development"`, but still a
+   reserved address the provider correctly rejects, landing on the exact same `"lookup-failed"`
+   reason a correct-hop-count-but-provider-failure would. The single observation we'd made
+   couldn't tell those two apart. Replaced with a real distinguishing check (a request with a
+   spoofed `X-Forwarded-For` header should return the real visitor's city, not the spoofed
+   address's) — see the README's deployment-architecture section, and `config/env.ts`'s
+   `TRUST_PROXY_HOPS` comment, both corrected to state this honestly instead of overclaiming.
+
+**A real Zod v4 typing quirk, found while implementing the coordinate fix, not assumed away:**
+`z.string().pipe(z.coerce.number()...)` fails to typecheck — `z.coerce.number()`'s declared input
+type (`unknown`) doesn't satisfy what `.pipe()` expects from the previous schema's string output,
+even though the runtime behavior would be correct. Worked around with `.transform(Number)` before
+`.pipe(z.number()...)` instead, which typechecks cleanly and, since the regex already guarantees
+a plain decimal string by that point, is exactly as safe as the coerce version would have been.
+
+**A real mistake in my own earlier fix, caught immediately by re-running the suite:** inserting
+the new `isTimeoutAbort` helper between `fetchJson`'s two overload signatures and its
+implementation broke TypeScript's overload grouping (`Function implementation name must be
+'fetchJson'`) — overload declarations and their implementation have to stay contiguous. Moved the
+helper above the overloads instead.
+
+**Every fix here was verified with a failing test first**, the same discipline used throughout
+this project: the new stalled-body test, coordinate-validation tests, malformed-JSON/oversized-
+body tests, and the DST regression test were each confirmed to fail against the pre-fix code
+(via `git stash` on just the relevant file) before being confirmed to pass against the fix,
+rather than trusting a green run alone to mean the test was actually exercising anything. The
+DST test in particular didn't need any environment manipulation to prove this, since this
+sandbox's own default timezone already happens to be `America/Edmonton` — the exact zone the bug
+was reported in.
+
+**The IP provider switch (ipapi.co → ipwho.is)** touched only `clients/ip-geolocation/` (client,
+raw types, mapper, and their tests) and one env default, by design — the vendor-isolation
+architecture (see the README's Architecture overview) meant `location.service.ts` and its own
+tests needed zero changes. Verified against the real live API before trusting it, the same
+standard as every other upstream integration in this project: a real successful lookup (8.8.8.8
+→ San Jose) and a real reserved-range rejection (10.0.0.1 → `{success: false, ...}`) through the
+actual client code, not just the mapper in isolation.
+
+**What I chose not to implement, and why:** the static city list and the same-name/same-country
+matching limitation (both flagged by Codex) are documented rather than "fixed" — see the
+README's [Trade-offs](./README.md#trade-offs) and [Known limitations](./README.md#known-limitations)
+sections. The alternatives considered for each would have added real infrastructure — a
+geocoding dependency, an arbitrary distance threshold — to satisfy a stricter reading of one
+requirement without solving a problem this app actually has.

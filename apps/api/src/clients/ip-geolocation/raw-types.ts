@@ -1,13 +1,13 @@
-// ipapi.co's shape, confirmed against its own published documentation
-// (https://ipapi.co/api/) and cross-checked against a real rate-limited
-// response captured live (same {error, reason, message} shape the docs
-// describe) — see AI_USAGE.md for why the success shape itself couldn't
-// be captured live: ipapi.co's free tier was already exhausted from both
-// the development sandbox and a residential network when this was built.
-//
-// A successful lookup has no `error` field at all. Only the fields this
-// app actually reads are declared.
-export interface IpApiSuccessResponse {
+// ipwho.is's shape, confirmed against its own published documentation
+// (https://ipwhois.io/documentation) and cross-checked against real live
+// responses: a successful lookup (`curl https://ipwho.is/8.8.8.8`) and a
+// reserved-range one (`curl https://ipwho.is/10.0.0.1` →
+// `{"success":false,"message":"Reserved range"}`, HTTP 200 — the provider's
+// own "couldn't do this" response is data, not necessarily a non-2xx
+// status, the same pattern already handled for the previous provider (see
+// mapper.ts). Only the fields this app actually reads are declared.
+export interface IpWhoIsSuccessResponse {
+  success: true;
   city?: string | null;
   region?: string | null;
   country_code?: string | null;
@@ -16,16 +16,18 @@ export interface IpApiSuccessResponse {
 }
 
 /**
- * Confirmed live: a plain non-2xx failure (RateLimited) comes back as
- * HTTP 429 with this shape. Per ipapi.co's own docs, "Invalid IP Address"
- * and "Reserved IP Address" use this *same* shape but with an HTTP 200 —
- * an unusual pattern that means detecting those cases requires reading the
- * response body, not just the HTTP status (see mapper.ts).
+ * Confirmed live: a reserved/private IP comes back as HTTP 200 with
+ * `success: false` and a `message` explaining why (e.g. "Reserved range").
+ * A genuinely malformed lookup path returns a real HTTP 404 instead (not
+ * modeled here — this app only ever calls `lookup()` with a real IP
+ * address, from `req.ip`, so that path isn't a normal case to design
+ * around; a non-2xx response is still handled by `fetchJson` as an
+ * `UpstreamError`, which `location.service.ts` treats identically to a
+ * mapped `null` either way).
  */
-export interface IpApiErrorResponse {
-  error: true;
-  reason: string;
+export interface IpWhoIsErrorResponse {
+  success: false;
   message?: string;
 }
 
-export type IpApiResponse = IpApiSuccessResponse | IpApiErrorResponse;
+export type IpWhoIsResponse = IpWhoIsSuccessResponse | IpWhoIsErrorResponse;

@@ -1,3 +1,5 @@
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fetchJson } from "./http.js";
 
@@ -5,7 +7,8 @@ import { fetchJson } from "./http.js";
 // pulling in a request-mocking library) — consistent with how the rest of
 // this backend's unit tests inject a fake collaborator instead of
 // intercepting network traffic; that style is reserved for the frontend
-// (MSW), which has a real browser-fetch boundary to simulate.
+// (MSW), which has a real browser-fetch boundary to simulate. One test
+// below is a deliberate exception — see its own comment for why.
 describe("fetchJson", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -132,5 +135,31 @@ describe("fetchJson", () => {
       status: 502,
       code: "UPSTREAM_ERROR",
     });
+  });
+
+  it("throws a 504 UpstreamError (not a 502) when headers arrive but the body then stalls", async () => {
+    // A real local server, not a stubbed `fetch` — every stubbed `Response`
+    // elsewhere in this file is already fully materialized, so none of
+    // them can reproduce a response that stalls mid-body the way a real
+    // stream can. This is the actual bug Codex's review found: a body-read
+    // timeout was being reported as "invalid JSON" (502) instead of a
+    // timeout (504), because the earlier fix only checked the *shape* of
+    // response.json()'s rejection, not whether the shared AbortSignal had
+    // actually timed out.
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.write('{"partial":'); // headers + a partial body, then never finishes
+    });
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const { port } = server.address() as AddressInfo;
+
+    try {
+      await expect(
+        fetchJson(`http://localhost:${port}/data`, { timeoutMs: 100 }),
+      ).rejects.toMatchObject({ status: 504, code: "UPSTREAM_ERROR" });
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });

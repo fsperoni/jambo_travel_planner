@@ -33,23 +33,45 @@ export function formatFullDate(isoDate: string): string {
   });
 }
 
+const LOCAL_DATETIME_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/;
+
 /**
  * Formats a city-local, timezone-less datetime string (sunrise/sunset, or
  * `CurrentWeather.observedAt`) as a short time label (e.g. "7:38 AM").
  *
- * Deliberately does *not* pin `timeZone` the way `formatWeekday`/
- * `formatFullDate` do: a string like "2026-10-02T07:38" has no timezone
- * offset, so `new Date(...)` parses it as local time in whatever zone the
- * runtime happens to be in — and formatting with no explicit `timeZone`
- * uses that exact same zone. The two cancel out, so the wall-clock time in
- * the string is always what's displayed, regardless of the browser's own
- * time zone — confirmed directly by formatting the same string under
- * different `TZ` settings and getting the same result back every time,
- * rather than assumed from how the two calls "should" interact.
+ * An earlier version relied on `new Date(localDateTime)` parsing the
+ * offset-less string as local time in the *runtime's* own zone, reasoning
+ * that formatting with no explicit `timeZone` would use that same zone
+ * right back, cancelling out. That's true most of the time, but it's
+ * wrong at a daylight-saving transition: parsing a wall-clock time that
+ * falls inside a DST gap (a real one, confirmed directly — 02:30 doesn't
+ * exist on 2026-03-08 in `America/Edmonton`, since clocks jump straight
+ * from 2:00 to 3:00) makes the runtime normalize it forward, so
+ * `formatLocalTime("2026-03-08T02:30")` silently returned "3:30 AM"
+ * instead of the 02:30 the string actually says. The string's numbers are
+ * parsed directly here instead — no local-time interpretation at any
+ * point — and built into a UTC instant with those exact field values,
+ * then formatted back with `timeZone: "UTC"` pinned. That displays the
+ * string's own wall-clock time unchanged in every browser zone, including
+ * inside a DST gap, confirmed directly the same way as before: formatting
+ * the same string under several different `TZ` settings and a DST-gap
+ * time and getting the same, correct result every time.
  */
 export function formatLocalTime(localDateTime: string): string {
-  return new Date(localDateTime).toLocaleTimeString(undefined, {
+  const match = LOCAL_DATETIME_PATTERN.exec(localDateTime);
+  if (!match) {
+    // Defensive: every real caller passes a value shaped exactly like
+    // Open-Meteo's own sunrise/sunset/observedAt fields. Failing loudly
+    // here beats silently formatting something meaningless if that ever
+    // stopped being true.
+    throw new Error(`formatLocalTime: not a recognizable local datetime: "${localDateTime}"`);
+  }
+  // Non-null: none of the regex's five capture groups is optional, so a
+  // successful match (already checked above) always populates all five.
+  const [, year, month, day, hour, minute] = match.map(Number);
+  return new Date(Date.UTC(year!, month! - 1, day!, hour!, minute!)).toLocaleTimeString(undefined, {
     hour: "numeric",
     minute: "2-digit",
+    timeZone: "UTC",
   });
 }

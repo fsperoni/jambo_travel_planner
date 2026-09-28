@@ -55,7 +55,7 @@ export class ForecastDateOutOfRangeError extends AppError {
 }
 
 /**
- * A third-party API (Open-Meteo, Wikipedia, ipapi.co) timed out, was
+ * A third-party API (Open-Meteo, Wikipedia, ipwho.is) timed out, was
  * unreachable, or returned an error status. `status` is *our* response
  * status (502 Bad Gateway for an unreachable/erroring upstream, 504
  * Gateway Timeout for one that took too long) — never the upstream's own

@@ -3,7 +3,7 @@ const IPV4_MAPPED_PREFIX = "::ffff:";
 /**
  * A dual-stack Node server sees an IPv4 client's address wrapped as
  * "::ffff:203.0.113.5" rather than the plain "203.0.113.5" — strip that
- * prefix so downstream code (isLoopback, ipapi.co) only ever sees one form
+ * prefix so downstream code (isLoopback, ipwho.is) only ever sees one form
  * per address, not two that mean the same thing.
  */
 export function normalizeIp(ip: string): string {

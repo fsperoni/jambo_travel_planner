@@ -25,10 +25,12 @@ export interface AbortableRequestState<T> {
  * encodes every input `request` depends on — e.g. `` `${lat},${lon},${date
  * ?? ""}` ``. Using one string, rather than passing the individual inputs
  * as separate hook arguments, keeps the underlying `useEffect`'s dependency
- * array to `[key, retryCount]`: exhaustive-deps is satisfied honestly, and
- * a caller can't forget to include one of its own inputs in `key` without
- * the resulting stale-closure bug being immediately obvious in testing
- * (the effect just wouldn't re-run when it should).
+ * array to `[key, retryCount]`: exhaustive-deps is satisfied honestly. This
+ * is still a manually maintained contract, though, not one ESLint or the
+ * type system can check — nothing stops a caller from building `key` from
+ * a subset of what `request` actually reads. A test that changes only the
+ * omitted input can catch that gap (the effect wouldn't re-run when it
+ * should), but nothing guarantees such a test exists.
  *
  * `request` is read through a ref updated on every render rather than
  * added to the effect's own dependencies — it's typically a fresh closure
@@ -70,6 +72,14 @@ export function useAbortableRequest<T>(
     requestRef
       .current(controller.signal)
       .then((result) => {
+        // Guards the success path the same way the catch below already
+        // does: `request` isn't guaranteed to actually honor the signal
+        // it's given (a caller's fetch could ignore cancellation, or
+        // simply finish in the narrow window between an abort and its own
+        // resolution) — without this, a superseded request that happens
+        // to resolve anyway could still overwrite newer data with stale
+        // data, the exact race this hook exists to prevent.
+        if (controller.signal.aborted) return;
         setData(result);
       })
       .catch((err: unknown) => {

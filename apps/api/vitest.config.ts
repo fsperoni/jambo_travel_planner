@@ -29,6 +29,16 @@ export default defineConfig({
         "src/types/**",
         "src/**/raw-types.ts",
       ],
+      // A floor, not a target — comfortably below the real, current
+      // numbers (98%+ stmts/lines, 92%+ branches, 100% funcs), so this
+      // fails CI on an actual regression rather than on ordinary
+      // fluctuation as new, lightly-tested code is added. No 100% target.
+      thresholds: {
+        statements: 90,
+        branches: 85,
+        functions: 90,
+        lines: 90,
+      },
     },
   },
 });

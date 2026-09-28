@@ -16,7 +16,7 @@ import styles from "./TravelPlannerPage.module.css";
 
 // A third outcome alongside "still loading" (null) and "detected
 // something" (a real DetectedLocation): GET /api/location itself being
-// unreachable. Every *provider* failure (ipapi.co down, rate-limited,
+// unreachable. Every *provider* failure (ipwho.is down, rate-limited,
 // nothing for this IP) is already handled server-side by falling back to
 // the default city — this only covers the endpoint call itself failing,
 // which the page still needs to recover from by picking some starting

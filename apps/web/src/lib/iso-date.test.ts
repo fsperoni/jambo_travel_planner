@@ -49,6 +49,38 @@ describe("formatLocalTime", () => {
     });
     expect(ifTreatedAsUtc).not.toBe("7:38 AM");
   });
+
+  it("returns the string's own wall-clock time even for one that falls inside a real DST gap", () => {
+    // A real, verified DST regression, not a hypothetical one: on
+    // 2026-03-08, clocks in America/Edmonton jump from 2:00 AM straight to
+    // 3:00 AM, so 2:30 AM never actually occurs there that day. An earlier
+    // version of formatLocalTime parsed the offset-less string as local
+    // time in the *runtime's own* zone — if that runtime happened to be
+    // America/Edmonton (or any zone sharing the same DST rule), the
+    // JS engine silently normalized the nonexistent 2:30 forward to 3:30
+    // before formatting, so `formatLocalTime("2026-03-08T02:30")` returned
+    // "3:30 AM" instead of the 2:30 the string actually says. The current
+    // implementation never interprets the string as local time in any
+    // zone — it reads the digits directly — so it isn't affected by this
+    // gap (or by which zone the runtime happens to be in) at all.
+    expect(formatLocalTime("2026-03-08T02:30")).toBe("2:30 AM");
+  });
+
+  it("proves the DST gap above is real: every UTC instant near the transition displays as 3-something in America/Edmonton, never 2:30", () => {
+    // No `process.env.TZ` here (this workspace's tsconfig has no Node
+    // types — see AI_USAGE.md) — an explicit `timeZone` option on the
+    // comparison call demonstrates the same fact without it, the same
+    // technique the Honolulu comparisons above use. 09:30 UTC is exactly
+    // when MST (UTC-7) would have read "2:30", but the zone has already
+    // switched to MDT (UTC-6) at that instant, so it reads "3:30" instead
+    // — confirming 2:30 AM genuinely doesn't exist in this zone that day.
+    const acrossTheGap = new Date("2026-03-08T09:30:00Z").toLocaleTimeString("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+      timeZone: "America/Edmonton",
+    });
+    expect(acrossTheGap).toBe("3:30 AM");
+  });
 });
 
 describe("formatFullDate", () => {

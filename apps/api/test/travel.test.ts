@@ -107,6 +107,53 @@ describe("GET /api/weather", () => {
     expect(res.body.error.code).toBe("VALIDATION_ERROR");
   });
 
+  it("returns 400 for a blank latitude, rather than silently treating it as 0", async () => {
+    // A real bug Codex's review found: z.coerce.number() alone parses ""
+    // as 0, so `?latitude=&longitude=0` used to succeed with a real
+    // (wrong) coordinate instead of a validation error.
+    const res = await authedGet("/api/weather?latitude=&longitude=0");
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("VALIDATION_ERROR");
+  });
+
+  it("returns 400 for a whitespace-only latitude", async () => {
+    const res = await authedGet("/api/weather?latitude=%20%20&longitude=0");
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("VALIDATION_ERROR");
+  });
+
+  it("returns 400 for hex/exponential-notation coordinates, not just non-numeric ones", async () => {
+    // z.coerce.number() alone also parses "0x10" as 16 and "1e1" as 10 —
+    // neither is a plain decimal number a real client would send for a
+    // coordinate.
+    const hex = await authedGet("/api/weather?latitude=0x10&longitude=0");
+    const exponential = await authedGet("/api/weather?latitude=1e1&longitude=0");
+
+    expect(hex.status).toBe(400);
+    expect(exponential.status).toBe(400);
+  });
+
+  it("returns 400 for a repeated latitude query parameter", async () => {
+    const res = await authedGet("/api/weather?latitude=1&latitude=2&longitude=0");
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("VALIDATION_ERROR");
+  });
+
+  it("accepts a real 0 for either coordinate", async () => {
+    const getWeatherReport = vi.fn().mockResolvedValue(buildWeatherReport());
+
+    const res = await authedGet(
+      "/api/weather?latitude=0&longitude=0",
+      buildApp({ weatherService: createFakeWeatherService({ getWeatherReport }) }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(getWeatherReport).toHaveBeenCalledWith(0, 0, undefined);
+  });
+
   it("returns the weather service's report for valid coordinates", async () => {
     const report = buildWeatherReport();
     const getWeatherReport = vi.fn().mockResolvedValue(report);
@@ -212,6 +259,27 @@ describe("GET /api/city-description", () => {
 
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe("VALIDATION_ERROR");
+  });
+
+  it("returns 400 for a whitespace-only title, rather than forwarding it to the Wikipedia client", async () => {
+    const res = await authedGet("/api/city-description?title=%20%20");
+
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe("VALIDATION_ERROR");
+  });
+
+  it("trims surrounding whitespace from a real title before passing it to the description service", async () => {
+    const getCityDescription = vi
+      .fn()
+      .mockResolvedValue({ title: "Calgary", description: "A city.", sourceUrl: null });
+
+    const res = await authedGet(
+      "/api/city-description?title=%20Calgary%20",
+      buildApp({ descriptionService: createFakeDescriptionService({ getCityDescription }) }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(getCityDescription).toHaveBeenCalledWith("Calgary");
   });
 
   it("returns the description service's result for a valid title", async () => {
