@@ -754,3 +754,91 @@ state from whichever suite ran last never makes the E2E login step flaky, which 
 risk reusing the database introduces.
 
 **Corrections requested by Fabio:** none this stage.
+
+## 2026-09-28 - Stage 10: polish (plus three specific requests)
+
+**Tool:** Claude Code.
+
+Fabio asked three specific questions/changes alongside starting Stage 10: whether fetching a
+user's IP needs permission/notification, sorting the city list alphabetically, and clearing the
+selected forecast date on a city change. Handled those first, then did the planned
+accessibility pass.
+
+**The IP/consent question was answered as reasoned judgment, explicitly flagged as not legal
+advice, rather than either refusing to engage or asserting false certainty.** The actual answer
+turns on a real distinction: GDPR treats an IP address as personal data, but processing personal
+data requires a _lawful basis_, not necessarily _consent_ specifically — "necessary for the
+service the user is actively requesting" is a real, commonly-relied-on basis (the same one a
+shopping site uses to default your currency by IP), and it's narrower here than the cases that
+genuinely do need an opt-in gate (persistent tracking, third-party ad profiling): the IP is never
+stored (already true, and already documented from Stage 6), used for exactly one lookup, and
+directly serves the feature on screen. Transparency is still expected, though - and the app
+already exceeds most sites here, since "Detected from your IP" is visible on-screen text the
+moment detection succeeds, not something a user would only discover by reading a privacy policy.
+No code changed as a result of this question; it was pure research delivered as reasoning with
+its confidence level stated honestly, not a task with an obvious implementation.
+
+**City sorting: `localeCompare`, verified against this project's own diacritic cities rather than
+assumed correct for them.** A plain `<` comparison would put "Šibenik" after every ASCII name
+(sorted by raw code point, not alphabetically); `localeCompare` was checked directly against the
+full real catalogue (including "São Paulo" and "Šibenik") before being trusted, producing "Paris,
+São Paulo, Šibenik, Sydney" - correctly interleaved, not clustered at the end. The sort lives in
+`listCities()`, not by reordering `CITY_CATALOGUE`'s own declaration - nothing else in the file
+depends on that array's order, so there was no reason to disturb it for a display concern.
+
+**Date-clearing on city change: proactive, not just the existing reactive recovery - a real
+design distinction, not a rename.** Stage 7 already recovered from a stale date via the
+`FORECAST_DATE_OUT_OF_RANGE` error code, but only _after_ sending a request with the old date and
+having the server reject it. Fabio's ask was for the date to clear immediately on a city switch,
+before any such request goes out at all - a different, additive behavior, not a replacement:
+`handleCityChange` now clears `selectedDate` directly, and the Stage 7 reactive effect stays in
+place for the one case it still uniquely covers (the same city's allowed range shifting from time
+passing, with no city change involved). Documented both mechanisms and which gap each one closes,
+rather than describing the reactive effect the same way after its primary original justification
+had moved elsewhere.
+
+**A real stale-DOM-reference test bug, caught by the tests actually failing, not predicted in
+advance.** The two rewritten `TravelPlannerPage` tests first captured the date-picker input
+element once, before triggering a city switch, and reused that reference afterward - which failed
+because the weather section (input included) unmounts entirely during the loading skeleton
+between one city's data and the next, so the captured reference pointed at a detached node no
+longer reflecting new state. Fixed by re-querying via `screen.getByLabelText(...)` fresh inside
+each `waitFor`, the same pattern already used correctly elsewhere in this file - a reminder that
+"I've already got a reference to it" doesn't hold across a component-unmount boundary in React,
+even when the visible UI looks like the same element is still there.
+
+**Two real, computed (not eyeballed) WCAG contrast failures, found by actually running the
+numbers.** Before touching any component, I computed relative-luminance contrast ratios for
+every color-token pair in `tokens.css` using the real WCAG formula, in both light and dark mode -
+not by looking at the hex values and guessing. Two failed outright in dark mode:
+`--color-primary` on `--color-surface` (2.83:1, needs 4.5:1 for text) and `--color-notice` on
+`--color-notice-bg` (2.63:1). Fixing the first one properly required noticing a real conflict,
+not just picking a lighter blue: `--color-primary` is _also_ a button background, and the
+lightened blue that fixes text-on-dark-surface contrast (`#60a5fa`, 5.75:1) drops white-button-
+text contrast to 2.54:1 - actively making the button worse while fixing the link/icon case.
+Verified this trade-off numerically before deciding, rather than fixing one regression by
+introducing another: split into two tokens, `--color-primary` (button backgrounds, unchanged,
+already passes in both themes) and a new `--color-primary-text` (links/icons/focus outlines,
+adaptive per theme - `#2563eb` light, `#60a5fa` dark). `--color-notice`'s dark value became
+`#fbbf24` (7.91:1), no second token needed since it only ever appears as text, not a background.
+
+**A concrete, previously-missing heading, found by actually grepping for headings across the
+whole frontend, not assumed present.** `LoginPage` has an `<h1>`; the authenticated view's
+`AppHeader` had only a `<span>` styled to look the same - meaning a screen-reader user navigating
+by heading level had literally nothing to land on once logged in. Fixed by making it a real
+`<h1>`, with an explicit `margin: 0; font-size: 1rem;` reset, since there's no project-wide
+heading-style reset for it to fall back on (confirmed by reading `global.css`, not assumed).
+
+**Focus order, the third accessibility-pass item from the project plan, addressed with a real,
+regression-tested fix rather than left as a checklist line.** The login → authenticated-view
+transition left focus on nothing in particular, since the "Sign in" button holding it is
+unmounted the moment `App.tsx` swaps views. `AppHeader` now moves focus to its own `<h1>` on
+mount (`tabIndex={-1}`, focusable programmatically without joining the Tab order) - standard SPA
+view-transition guidance. Verified with the same discipline as this project's other important
+tests: added a `toHaveFocus()` assertion, then deliberately commented out the `.focus()` call to
+confirm the test actually failed with the change reverted out, before restoring it and confirming
+a clean pass.
+
+**Corrections requested by Fabio:** none directly on implementation. The three requests that
+opened this stage (IP question, city sort, date-clear) were new asks, not corrections to
+anything already built.

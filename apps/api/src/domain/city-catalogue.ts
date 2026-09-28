@@ -118,8 +118,15 @@ export const CITY_CATALOGUE: readonly City[] = [
   },
 ] as const;
 
+/**
+ * Sorted alphabetically by name for display — `localeCompare` rather than a
+ * plain `<` comparison, so a diacritic doesn't put a city out of its
+ * expected alphabetical position (e.g. "Šibenik" sorts next to "S" cities,
+ * not after "Z"). `CITY_CATALOGUE`'s own declaration order is unaffected
+ * and doesn't matter — nothing else in this file depends on it.
+ */
 export function listCities(): City[] {
-  return [...CITY_CATALOGUE];
+  return [...CITY_CATALOGUE].sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export function findCityById(id: string): City | undefined {

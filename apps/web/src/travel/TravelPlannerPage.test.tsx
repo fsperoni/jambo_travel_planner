@@ -238,60 +238,18 @@ describe("TravelPlannerPage", () => {
     expect(within(selectedDayCard).getByText("15°C")).toBeInTheDocument();
   });
 
-  it("silently drops a previously selected date that's no longer in range after switching cities", async () => {
-    const [, tokyo] = MOCK_CITIES;
-
+  it("clears the selected date when switching to a different city, and doesn't request a forecast for any date until one is chosen again", async () => {
+    // A forecast date is a choice about *this* city's calendar — carrying
+    // it over to a new city (even one where it happened to still be valid)
+    // would be surprising, so a city change always resets to "current +
+    // week only" and requires the user to pick a date again.
+    const weatherRequests: Array<string | null> = [];
     server.use(
       http.get(`${API_BASE_URL}/api/cities`, () => HttpResponse.json(MOCK_CITIES)),
       http.get(`${API_BASE_URL}/api/weather`, ({ request }) => {
-        const url = new URL(request.url);
-        const date = url.searchParams.get("date");
-        const isTokyo = url.searchParams.get("latitude") === String(tokyo?.latitude);
-
-        if (isTokyo && date === "2026-09-29") {
-          return HttpResponse.json(
-            {
-              error: {
-                code: "FORECAST_DATE_OUT_OF_RANGE",
-                message: "date must be between 2026-10-05 and 2026-10-10",
-                details: { min: "2026-10-05", max: "2026-10-10" },
-              },
-            },
-            { status: 400 },
-          );
-        }
-
-        const min = isTokyo ? "2026-10-05" : "2026-09-25";
-        const max = isTokyo ? "2026-10-10" : "2026-09-30";
-        const selectedDay = date
-          ? {
-              date,
-              condition: { code: 3, label: "Overcast" },
-              temperatureMax: 15,
-              temperatureMin: 5,
-              precipitationProbabilityMax: 20,
-              sunrise: `${date}T07:00`,
-              sunset: `${date}T19:00`,
-            }
-          : undefined;
-
-        return HttpResponse.json({
-          timezone: "UTC",
-          localDate: min,
-          allowedForecastDates: { min, max },
-          units: { temperature: "°C", windSpeed: "km/h", precipitationProbability: "%" },
-          current: {
-            observedAt: `${min}T12:00`,
-            temperature: 10,
-            feelsLike: 11,
-            humidity: 50,
-            windSpeed: 10,
-            isDay: true,
-            condition: { code: 0, label: "Clear" },
-          },
-          week: selectedDay ? [selectedDay] : [],
-          ...(selectedDay ? { selectedDay } : {}),
-        });
+        const date = new URL(request.url).searchParams.get("date");
+        weatherRequests.push(date);
+        return HttpResponse.json(reportWith(10, "Clear"));
       }),
     );
 
@@ -300,17 +258,61 @@ describe("TravelPlannerPage", () => {
 
     const datePicker = await screen.findByLabelText("See forecast for a specific day");
     await user.type(datePicker, "2026-09-29");
-    expect(await screen.findByLabelText(/Forecast for/)).toBeInTheDocument();
+    await expect(datePicker).toHaveValue("2026-09-29");
 
     await user.selectOptions(screen.getByRole("combobox", { name: "City" }), "tokyo");
 
-    // The invalid date is dropped silently — no error banner, and the
-    // selected-day card disappears since there's no longer a selected date.
+    // Re-queried inside waitFor, not the earlier `datePicker` reference —
+    // the weather section (including this input) unmounts while Tokyo's
+    // data is loading, so a captured element goes stale across that gap.
+    await waitFor(() => {
+      expect(screen.getByLabelText("See forecast for a specific day")).toHaveValue("");
+    });
+    expect(screen.queryByLabelText(/Forecast for/)).not.toBeInTheDocument();
+    // The city-switch request itself must not carry the old city's date —
+    // confirms the date is cleared *before* the new request goes out, not
+    // just that the UI resets after the fact.
+    expect(weatherRequests.at(-1)).toBeNull();
+  });
+
+  it("recovers from a date that's no longer valid for the same city, without a city change", async () => {
+    // The city-change case above clears the date proactively; this covers
+    // the one remaining path to an out-of-range date: the allowed range
+    // shifting for the *same* city (e.g. time passing) between one weather
+    // fetch and the next.
+    let callCount = 0;
+    server.use(
+      http.get(`${API_BASE_URL}/api/cities`, () => HttpResponse.json(MOCK_CITIES)),
+      http.get(`${API_BASE_URL}/api/weather`, ({ request }) => {
+        const date = new URL(request.url).searchParams.get("date");
+        callCount += 1;
+        if (date && callCount > 1) {
+          return HttpResponse.json(
+            {
+              error: {
+                code: "FORECAST_DATE_OUT_OF_RANGE",
+                message: "date must be between 2026-09-26 and 2026-10-01",
+                details: { min: "2026-09-26", max: "2026-10-01" },
+              },
+            },
+            { status: 400 },
+          );
+        }
+        return HttpResponse.json(reportWith(10, "Clear"));
+      }),
+    );
+
+    const user = userEvent.setup();
+    render(<TravelPlannerPage />);
+
+    const datePicker = await screen.findByLabelText("See forecast for a specific day");
+    await user.type(datePicker, "2026-09-29");
+
+    // Re-queried inside waitFor — same stale-reference reasoning as above.
     await waitFor(() => {
       expect(screen.getByLabelText("See forecast for a specific day")).toHaveValue("");
     });
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText(/Forecast for/)).not.toBeInTheDocument();
   });
 
   it("clears the location notice once the user manually picks a different city", async () => {

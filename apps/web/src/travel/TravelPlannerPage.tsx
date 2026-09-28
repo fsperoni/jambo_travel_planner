@@ -108,10 +108,18 @@ export function TravelPlannerPage() {
   }, [cities, locationOutcome]);
 
   // A manual city change makes the location notice stale — it describes
-  // how the *initial* selection was made, not this one.
+  // how the *initial* selection was made, not this one. The selected date
+  // is cleared too, deliberately, rather than carried over even when it
+  // would still be valid for the new city: a forecast date is a choice
+  // about *this* city's calendar, and starting the new city back at
+  // "current + week only" is less surprising than silently keeping a date
+  // the user picked while looking at somewhere else. (A stale-but-now-
+  // invalid date is still handled separately below, for the case where the
+  // date became invalid without a city change — e.g. time passing.)
   function handleCityChange(cityId: string): void {
     setSelectedCityId(cityId);
     setLocationNotice(null);
+    setSelectedDate(null);
   }
 
   const selectedCity = cities?.find((city) => city.id === selectedCityId) ?? null;
@@ -133,14 +141,15 @@ export function TravelPlannerPage() {
     retry: retryWeather,
   } = useCityData(selectedCity?.latitude ?? null, selectedCity?.longitude ?? null, selectedDate);
 
-  // A previously-picked date can become invalid the moment the city
-  // changes — the allowed range is per-city (it's relative to *that*
-  // city's own local "today", not the browser's), so a date valid for
-  // Calgary might not be for Tokyo. Rather than guess at the new range
-  // ahead of time, this lets the request go through and recovers from the
-  // one error code that means specifically that: silently drop the date
-  // and refetch without it, which is exactly "keep the date only if it's
-  // still valid for the new city."
+  // A city change already clears the date proactively (handleCityChange,
+  // above) — this is the remaining case that doesn't go through that path:
+  // a date picked for the *current* city stops being valid just from time
+  // passing (its allowed range is relative to that city's own local
+  // "today", which moves forward without any city change happening at
+  // all). Rather than track a clock client-side to predict that, this lets
+  // the request go through and recovers from the one error code that means
+  // specifically "this date is no longer in range": silently drop it and
+  // let the hook refetch without it.
   useEffect(() => {
     if (weatherErrorCode === "FORECAST_DATE_OUT_OF_RANGE" && selectedDate !== null) {
       setSelectedDate(null);

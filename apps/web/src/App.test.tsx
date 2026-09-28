@@ -33,5 +33,15 @@ describe("App", () => {
     expect(await screen.findByRole("combobox", { name: "City" })).toBeInTheDocument();
     expect(await screen.findByLabelText("Current weather")).toBeInTheDocument();
     expect(screen.getByLabelText("7-day forecast")).toBeInTheDocument();
+
+    // The authenticated view has a real <h1> naming the page, for
+    // screen-reader/document-outline navigation — not just visible text.
+    const heading = screen.getByRole("heading", { level: 1, name: "Jambo Travel Planner" });
+    expect(heading).toBeInTheDocument();
+    // Focus moves there on the login → authenticated-view transition,
+    // since the "Sign in" button that had it is now unmounted — without
+    // this, focus would land on nothing in particular for a keyboard/
+    // screen-reader user.
+    expect(heading).toHaveFocus();
   });
 });

@@ -43,6 +43,25 @@ describe("city catalogue", () => {
     expect(listCities()).toHaveLength(CITY_CATALOGUE.length);
   });
 
+  it("listCities returns cities sorted alphabetically by name", () => {
+    const names = listCities().map((city) => city.name);
+    const expected = [...names].sort((a, b) => a.localeCompare(b));
+
+    expect(names).toEqual(expected);
+    // Confirms this isn't a vacuous check against CITY_CATALOGUE's own
+    // (non-alphabetical) declaration order.
+    expect(names).not.toEqual(CITY_CATALOGUE.map((city) => city.name));
+  });
+
+  it("sorts a diacritic city into its expected alphabetical position, not after Z", () => {
+    const names = listCities().map((city) => city.name);
+    const sibenikIndex = names.indexOf("Šibenik");
+    const sydneyIndex = names.indexOf("Sydney");
+
+    expect(sibenikIndex).toBeGreaterThan(-1);
+    expect(sibenikIndex).toBeLessThan(sydneyIndex);
+  });
+
   it("findCityById finds an existing city by id", () => {
     expect(findCityById("calgary")?.name).toBe("Calgary");
   });

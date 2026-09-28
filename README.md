@@ -22,19 +22,20 @@ the city closest to your IP address.
 9. [Monorepo structure](#monorepo-structure)
 10. [Authentication / JWT architecture](#authentication)
 11. [Security considerations](#security-considerations)
-12. [IP-based geolocation](#ip-based-geolocation)
-13. [Timezone / date handling](#timezone-date-handling)
-14. [API overview](#api-overview)
-15. [Local setup](#local-setup)
-16. [Environment variables](#environment-variables)
-17. [Database / migrations](#database-migrations)
-18. [Running tests](#running-tests)
-19. [Testing strategy & coverage](#testing-strategy)
-20. [Deployment architecture](#deployment-architecture)
-21. [AI usage](#ai-usage)
-22. [Known limitations](#known-limitations)
-23. [Trade-offs](#trade-offs)
-24. [What I'd improve with more time](#what-id-improve-with-more-time)
+12. [Accessibility](#accessibility)
+13. [IP-based geolocation](#ip-based-geolocation)
+14. [Timezone / date handling](#timezone-date-handling)
+15. [API overview](#api-overview)
+16. [Local setup](#local-setup)
+17. [Environment variables](#environment-variables)
+18. [Database / migrations](#database-migrations)
+19. [Running tests](#running-tests)
+20. [Testing strategy & coverage](#testing-strategy)
+21. [Deployment architecture](#deployment-architecture)
+22. [AI usage](#ai-usage)
+23. [Known limitations](#known-limitations)
+24. [Trade-offs](#trade-offs)
+25. [What I'd improve with more time](#what-id-improve-with-more-time)
 
 ## Live demo
 
@@ -419,6 +420,38 @@ message, or any other implementation detail to the client.
   instead, verified empirically rather than assumed, is what keeps that header meaningful — see
   [IP-based geolocation](#ip-based-geolocation).
 
+## Accessibility
+
+Accessibility work started well before Stage 10 — `role="status"`/`role="alert"` on every
+loading/error state, labelled form controls, `srOnly` text alongside decorative icons — but
+Stage 10 is where the app got a dedicated pass rather than accessibility landing only as a
+byproduct of building each feature.
+
+**Two real, measured contrast failures, not eyeballed.** Dark mode's `--color-primary` (used
+for link/icon text sitting directly on `--color-surface`) and `--color-notice` (the
+session-expired/slow-request banner) both computed to well under WCAG AA's 4.5:1 text-contrast
+minimum — 2.83:1 and 2.63:1 respectively, checked with the actual relative-luminance formula,
+not guessed at from how the colors looked. The fix needed a second token, not just a different
+dark-mode value: `--color-primary` is _also_ a button background (white text on it already
+passes AA in both themes at its current value), and lightening it for readability against a dark
+card would have made that same value fail as a button background instead — the two roles have
+opposite requirements from the same starting color. `--color-primary-text` now covers the
+text/icon/focus-outline role, adaptive per theme; `--color-primary` stays fixed for buttons. Full
+before/after numbers are in `AI_USAGE.md`'s Stage 10 entry.
+
+**The authenticated view had no `<h1>` at all before this.** `LoginPage` has one, but
+`AppHeader`'s title was a plain `<span>` — meaning a screen-reader user navigating by heading
+level had nothing to land on once past login. Now a real `<h1>`, with an explicit CSS reset
+(`margin: 0; font-size: 1rem;`) to keep its previous visual size, since there was no
+project-wide heading reset to fall back on.
+
+**Focus order:** the login → authenticated-view transition previously left focus on nothing in
+particular, since the "Sign in" button holding it gets unmounted the moment `App.tsx` swaps
+views. `AppHeader` now moves focus to its own (`tabIndex={-1}`, programmatically focusable
+without joining the normal Tab order) `<h1>` on mount — standard SPA view-transition guidance,
+verified with a real `toHaveFocus()` assertion, and confirmed to actually catch a regression by
+temporarily removing the `.focus()` call and watching the test fail before reverting.
+
 ## IP-based geolocation
 
 `GET /api/location` (Bearer-protected, like every other travel endpoint) returns
@@ -527,14 +560,20 @@ browsers grey out or refuse out-of-range dates directly in their own date-picker
 zero-JavaScript layer on top of the backend's validation, never a replacement for it, since a
 client can always send a `date` directly to the API regardless of what the input allows.
 
-**A previously-picked date can become invalid the moment the city changes** — the allowed range
-is relative to _that_ city's own local "today", not the browser's, so a date valid for Calgary
-might land outside Tokyo's range. Rather than have the frontend guess at the new range in
-advance, `TravelPlannerPage` lets the request go through with the old date and recovers from the
-one error code that means specifically that (`FORECAST_DATE_OUT_OF_RANGE`): it silently clears
-the date and lets `useCityData` refetch without it — which is exactly "keep the date only if
-it's still valid for the new city," enforced by the one place that actually knows the new range
-(the server), not guessed at by the client.
+**Switching cities always clears the selected date** (`TravelPlannerPage`'s `handleCityChange`) —
+deliberately, even for a date that happens to still be in range for the new city. A forecast
+date is a choice about a specific city's calendar; carrying it silently across a city switch
+would be more surprising than resetting to "current + week only" and asking the user to pick
+again. This also means a city switch never sends the old date in its very first request for the
+new city, so there's no wasted round trip to a range the new city might reject anyway.
+
+**A date can still become invalid without any city change** — its allowed range is relative to
+that city's own local "today", which moves forward on its own as real time passes, independent
+of anything the user does. Rather than have the frontend track a clock to predict this,
+`TravelPlannerPage` lets the request go through and recovers from the one error code that means
+specifically that (`FORECAST_DATE_OUT_OF_RANGE`): it silently clears the date and lets
+`useCityData` refetch without it — enforced by the one place that actually knows the current
+range (the server), not guessed at by the client.
 
 ## API overview
 
@@ -542,7 +581,7 @@ it's still valid for the new city," enforced by the one place that actually know
 | ----------------------------------------------------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `GET /health`                                                     | none               | `{ "status": "ok" }` — used by the hosting platform's health check                                                                                                                                                                  |
 | `POST /api/auth/login`                                            | none, rate-limited | `{email,password}` → `200 {accessToken, expiresIn, user}`; 400 bad body; 401 invalid credentials                                                                                                                                    |
-| `GET /api/cities`                                                 | Bearer             | `200 City[]` — the static catalogue, see [Database / migrations](#database-migrations)                                                                                                                                              |
+| `GET /api/cities`                                                 | Bearer             | `200 City[]`, sorted alphabetically by name — the static catalogue, see [Database / migrations](#database-migrations)                                                                                                               |
 | `GET /api/weather?latitude={n}&longitude={n}[&date={YYYY-MM-DD}]` | Bearer             | `200 WeatherReport`; 400 invalid/out-of-range coordinates or a malformed/nonexistent `date`; 400 `FORECAST_DATE_OUT_OF_RANGE` for a real date outside `allowedForecastDates` (range in `details`); 502/504 on an Open-Meteo failure |
 | `GET /api/city-description?title={string}`                        | Bearer             | `200 CityDescription`; missing/disambiguation page → `200` with `description: null` (not an error); 400 missing title; 502/504 on a Wikipedia failure                                                                               |
 | `GET /api/location`                                               | Bearer             | `200 DetectedLocation`; every detection failure (local dev, provider outage/rate-limit, an IP it can't place) is a `200` fallback, never an error, see [IP-based geolocation](#ip-based-geolocation)                                |
@@ -853,10 +892,13 @@ sunrise/sunset formatted as local wall-clock times). `TravelPlannerPage`'s two m
 Stage 7 tests: picking a date renders the selected-day card with the right data (scoped with
 `within()`, since the same day's temperature is _also_ visible in the still-rendered week strip —
 an ambiguous-query trap the test deliberately avoids rather than accidentally passing for the
-wrong reason); and picking a date, then switching to a city where that date is genuinely out of
-range, silently drops the date and shows neither an error banner nor a stale selected-day card —
-the exact "keep the date only if it's still valid" behavior, reproduced as a real race between a
-user action and a server rejection rather than only argued for in prose.
+wrong reason); and picking a date, then switching cities, confirms the date resets to empty and
+the switch's own weather request never carries the old date at all (asserted against the actual
+query string, not just the UI's end state) — the proactive-clearing behavior added in Stage 10.
+A separate test drives the _reactive_ fallback directly, without any city change: the same
+city's allowed range shifting between one request and the next (e.g. time passing) still
+recovers via `FORECAST_DATE_OUT_OF_RANGE`, reproduced as a real race between a user action and a
+server rejection rather than only argued for in prose.
 
 **End-to-end (Stage 9), `e2e/`, is a different kind of test from everything above** — real
 backend and frontend dev servers, a real (test) database, and a real Chromium browser driven by
@@ -888,6 +930,18 @@ the date picker drives a real request/response round trip end to end. This was v
 actually catch a regression, not just pass vacuously: deliberately corrupting a fixture value
 made the test fail with a clear, real diff between expected and rendered text, then passed
 clean again once reverted.
+
+**Stage 10 adds:** `city-catalogue.test.ts` asserts `listCities()`'s output is actually sorted
+(compared against a fresh `localeCompare` sort of the same names, not hand-typed expected
+strings that could drift), plus a dedicated check that a diacritic city (Šibenik) lands in its
+correct alphabetical position rather than after every plain-ASCII name. `TravelPlannerPage`'s
+date-clearing behavior split into two tests matching the two distinct code paths that can now
+clear a date: switching cities (asserted against the actual query string the new city's weather
+request carries — proving the date is cleared _before_ that request goes out, not just that the
+UI resets afterward) and the same city's allowed range shifting without any city change (the
+narrower, `FORECAST_DATE_OUT_OF_RANGE` recovery path). `App.test.tsx` gained the two Accessibility
+section assertions (a real `<h1>`, and that focus actually lands on it after login) — the focus
+one confirmed to catch a real regression by temporarily breaking it and watching the test fail.
 
 ## Deployment architecture
 
@@ -973,4 +1027,50 @@ trade-offs identified during design._
 
 ## What I'd improve with more time
 
-_Coming in Stage 11._
+**Device geolocation as a more accurate alternative on cellular networks.** IP-based
+geolocation (the current approach — see [IP-based geolocation](#ip-based-geolocation)) is
+noticeably less reliable for a phone on cellular data than for a laptop on home wifi: carriers
+route mobile traffic through centralized gateways that don't correspond to the device's actual
+location, so the IP maps to wherever the carrier's gateway is, not the user. This isn't
+hypothetical — it's a known, common failure mode (e.g. a Rogers customer's IP can resolve to a
+city far from where they actually are, and real retail sites' store-locator features get this
+wrong for the same reason). The fix is the browser's own `navigator.geolocation` API (GPS/wifi-
+based, resolved on-device), which is meaningfully more accurate — but it's a real trade-off, not
+a strict upgrade: unlike the current silent IP lookup, it requires an explicit browser permission
+prompt the user can deny, and works only in a secure (HTTPS) context (already true here). The
+likely design: try `navigator.geolocation.getCurrentPosition()` first, with a short timeout, and
+fall back to the existing IP-based detection if it's denied, times out, or the browser doesn't
+support it — so the app degrades to today's exact behavior rather than requiring the permission
+to function at all.
+
+**A small TTL cache in front of the three upstream clients** (`clients/open-meteo/`,
+`clients/wikipedia/`, `clients/ip-geolocation/`) — deliberately not built for this submission
+(see [Trade-offs](#trade-offs)), but the design was thought through: an in-memory `Map` keyed by
+the request's own parameters, with a TTL chosen per how often each value actually changes —
+
+| Cached call               | Cache key                                                                                  | TTL         | Why that TTL                                                                                                                                                                                                                                                                         |
+| ------------------------- | ------------------------------------------------------------------------------------------ | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Weather (Open-Meteo)      | `latitude,longitude` (rounded — the same city is always requested at the same coordinates) | ~10 minutes | Weather itself doesn't meaningfully change minute to minute, and this is the call most likely to get rate-limited under real traffic (confirmed firsthand during Stage 3.5's deployment verification — Open-Meteo's own free tier returned a real `503 "The service is overloaded"`) |
+| Description (Wikipedia)   | the requested `title`                                                                      | ~24 hours   | Article text changes rarely; there's no reason to re-fetch the same city's description more than about once a day                                                                                                                                                                    |
+| IP geolocation (ipapi.co) | the normalized client IP                                                                   | ~24 hours   | A given IP's city rarely changes within a day, and this is the upstream with the tightest free-tier quota — confirmed firsthand too (ipapi.co's free tier was already exhausted, a real `429`, from two independent networks while building Stage 6)                                 |
+
+The reason this stayed out rather than getting built anyway: a per-process `Map` is trivial for
+a single Render instance (this deployment), but wouldn't be correct behavior with more than one
+instance (each would have its own cache, so cache hit rate — and staleness — would depend on
+which instance happened to handle a given request); a real multi-instance deployment would want a
+shared store (Redis) instead, which is real infrastructure this take-home doesn't have a
+justified reason to add. Documented here so the reasoning exists even without the code.
+
+**Refresh tokens** (Stage 8 in the original plan, dropped for time — see
+[Authentication](#authentication)): an opaque token in an HttpOnly cookie, rotated on use, so a
+page reload doesn't require signing in again. The core's 60-minute access token
+(`ACCESS_TOKEN_TTL_SECONDS`, see [Deployment architecture](#deployment-architecture)) is the
+accepted stand-in for now.
+
+**Smaller items**, roughly in the order they'd be worth doing: a change-password flow (there's
+currently no account management at all beyond the seeded demo user); per-user/per-IP API rate
+limits, not just the login rate limiter; a °C/°F toggle; an hourly (not just daily) forecast for
+the selected day; a tuned Content-Security-Policy beyond Helmet's defaults; a second IP
+geolocation provider as a fallback when ipapi.co's own quota is exhausted; and, if the two apps'
+shared types ever grow past the current handful of interfaces, a shared contract package (or
+generated OpenAPI client) instead of the current duplicated-by-hand types.
