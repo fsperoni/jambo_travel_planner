@@ -1099,3 +1099,102 @@ itself and clears the date the moment it notices, no request involved.
 [Timezone / date handling](./README.md#timezone-date-handling) section) is preserved exactly,
 just enforced in one fewer place. `allowedForecastDates` itself still comes from Open-Meteo via
 the mapper, untouched by this change.
+
+## 2026-09-28 - Production bug: IP geolocation never worked, because TRUST_PROXY_HOPS was wrong
+
+**Tool:** Claude Code, diagnosing a real bug Fabio reported after deploying and testing the app
+for the first time: both his Mac (browser) and his phone showed "Couldn't detect your location,
+showing Calgary" — the `reason: "lookup-failed"` fallback, not the `"local-development"` one, so
+this wasn't the loopback short-circuit; detection was genuinely failing in production, for every
+real visitor, regardless of which real IP they connected from.
+
+**Why this wasn't caught earlier:** the Codex-review pass on 2026-09-27 already corrected an
+overclaim that a `lookup-failed` response from the deployed app "proved" `TRUST_PROXY_HOPS` was
+configured correctly, and explicitly listed the real verification (a spoofed-`X-Forwarded-For`
+check against the live deployment) as something only Fabio could run after redeploying — see that
+date's entry. That check was never run before this session, so the wrong assumption
+(`TRUST_PROXY_HOPS=1`, "Render sits exactly one reverse proxy in front of this app") had never
+actually been tested against reality; it had only ever been tested against a local Express server
+built to match that same assumption, which of course confirmed it.
+
+**First, a real check on a claim I almost trusted uncritically:** searching for Render's real
+proxy topology surfaced a set of GitHub search results that looked wrong on their face — several
+small, otherwise-unrelated repositories with nearly identical PR titles ("trust Render's three
+proxy hops") and descriptions. That pattern (many unrelated repos independently arriving at
+identical, oddly specific phrasing for a niche fact) reads as search-result pollution rather than
+organic knowledge, so it was treated as unverified rather than cited as a source, even though the
+number it named ("3") later turned out to be correct. A more credible-looking source (a Render
+team member's own community-forum comment, via a redirected URL) was checked next and said
+something that actually contradicts the standard X-Forwarded-For hop-counting model this app's
+`TRUST_PROXY_HOPS` design assumes ("we set the first IP in the list to the real client IP") —
+which made it clear the public information available was either incomplete or describing a
+different mechanism than expected, not something to build a fix on by more searching.
+
+**The actual diagnostic, against the real deployment:** rather than guess a new hop count and
+have Fabio redeploy repeatedly to trial-and-error it, I added a small temporary block to
+`/api/location`'s own JSON response — the raw `X-Forwarded-For` header and what Express currently
+resolved `req.ip` to (`controllers/travel.controller.ts`, with a matching test asserting its
+shape). This is different from server-side logging: the data went back only to the requester, in
+their own response body, never written to a log or persisted anywhere, so it didn't conflict with
+the documented policy (README's [Security considerations](./README.md#security-considerations))
+of never logging a visitor's IP — I flagged this distinction to Fabio before adding it, since the
+policy is a deliberate, stated design commitment, not something to quietly work around.
+
+One real request from Fabio's own Mac (incognito Chrome, so no client-set headers) returned:
+
+```json
+"_debug": {
+  "rawForwardedFor": "70.65.124.163, 162.159.102.35, 10.192.34.107",
+  "resolvedIp": "10.192.34.107",
+  "nearestSocketPeer": "::1"
+}
+```
+
+Three real entries, not one: `70.65.124.163` (Fabio's own visible IP, added by Cloudflare since a
+normal browser never sets this header itself), `162.159.102.35` (Cloudflare's own edge IP —
+`162.159.0.0/16` is a documented Cloudflare range), and `10.192.34.107` (a private RFC1918
+address — Render's own internal load balancer). With `TRUST_PROXY_HOPS=1`, Express was resolving
+`req.ip` to the _last_ of these — Render's own internal address — which ipwho.is correctly
+rejected as a reserved/private range, landing on `lookup-failed` for every single request
+regardless of who was actually connecting. `nearestSocketPeer: "::1"` (loopback) is expected and
+uninformative on its own — Render proxies to the running container over localhost — and doesn't
+interact with `location.service.ts`'s `isLoopback()` check, since that only ever runs against the
+_resolved_ `req.ip`, never the raw socket peer.
+
+**The fix:** `TRUST_PROXY_HOPS=3`, set directly in Render's dashboard (an env var, not a code
+change) — Express's numeric `trust proxy` counts hops from the right, and three trusted hops
+(visitor → Cloudflare edge → Render's own load balancer) correctly lands back on the first entry,
+the visitor's own IP, regardless of anything a client might prepend to a spoofed header. Verified
+against the real chain, not just reasoned about: a unit test in `test/travel.test.ts` was updated
+to use `trustProxyHops: 3` against the exact real header shape observed
+(`"9.9.9.9, 70.65.124.163, 162.159.102.35, 10.192.34.107"`, with `9.9.9.9` standing in for a
+client-spoofed prefix) and asserts the location service receives `70.65.124.163`, not the
+spoofed value and not Render's own internal address.
+
+**Cleaned up after confirming:** the temporary `_debug` block and its test were removed once the
+real chain shape was known (they were never meant to ship — added, used once, then reverted in
+the same session), and every place documenting the wrong assumption was corrected rather than
+silently edited: `config/env.ts`'s `TRUST_PROXY_HOPS` comment, the README's
+[Deployment architecture](./README.md#deployment-architecture) and
+[IP-based geolocation](./README.md#ip-based-geolocation) sections, and the environment-variables
+table — each now states the real number and, for the two sections that previously asserted the
+wrong one outright, explains what was wrong and how it was actually found, the same "record the
+mistake, don't quietly fix it" standard used throughout this log. `apps/api/.env.example` and the
+local-dev default (`0`) were deliberately left alone — this only ever affected the deployed
+value, since local dev genuinely has no reverse proxy in front of it.
+
+**A note on process, not just the bug:** this fix was applied twice. The first pass was lost when
+an in-progress `git reset` (meant to be a `--soft` reset ahead of a planned force-push) left the
+working tree clean instead of staged — soft resets never touch the working tree or index by
+themselves, so something else in that sequence must have discarded the changes too. Caught by
+checking actual file contents after the fact rather than trusting `git status`/the reflog alone
+("nothing to commit, working tree clean" looked fine on its own, but contradicted what should
+have been true right after a soft reset), and redone from scratch immediately once confirmed
+missing, using this entry (already written before the loss) as the spec for exactly what to
+reproduce.
+
+**Still needs Fabio:** set `TRUST_PROXY_HOPS=3` in Render's dashboard and redeploy, then run the
+two-check verification this session's earlier work already documented — a normal request
+returning the real city with `source: "ip"`, and the same request with a spoofed
+`X-Forwarded-For` header still returning the real city, not the spoofed address's — to confirm
+the fix against the live deployment rather than trusting the local regression test alone.

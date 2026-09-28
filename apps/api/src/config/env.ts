@@ -73,19 +73,22 @@ const envSchema = z.object({
   // (which would trust *any* X-Forwarded-For value, letting a client spoof
   // its own IP just by sending the header). `0` (the default, correct for
   // local dev with no reverse proxy in front) means req.ip always reflects
-  // the actual TCP connection. In production behind exactly one reverse
-  // proxy (Render's own load balancer), this must be `1` — confirmed
-  // empirically against a local test server with hops=1, not assumed:
-  // Express trusts the proxy's own observed address and returns the
-  // *last* entry of X-Forwarded-For, correctly ignoring anything a client
-  // prepends to that header (see test/travel.test.ts's spoofed-header
-  // test for the same thing pinned down as a regression). This local
-  // verification alone can't tell a correct hop count apart from one
-  // that's too low but happens to still land on the same fallback reason
-  // — a plain response from the real deployment can't either; only a
-  // spoofed-header request against the real deployment can (see the
-  // README's deployment architecture section for exactly what that check
-  // looks like and why).
+  // the actual TCP connection. In production this must be `3`, not `1` —
+  // an earlier version of this comment assumed Render sits exactly one
+  // reverse proxy in front of this app; that was wrong, caught only by
+  // deploying a temporary debug endpoint that echoed the raw
+  // X-Forwarded-For header and the resolved req.ip from a real request
+  // (see this date's AI_USAGE.md entry). The real chain has three
+  // entries — the visitor's own IP, then Cloudflare's edge, then Render's
+  // own internal load balancer — so `1` was resolving req.ip to Render's
+  // own internal (private) address, which the geolocation provider
+  // correctly rejected, landing on the *same* fallback reason
+  // ("lookup-failed") a genuine provider outage would. `3` (not just "2
+  // trusted proxies") because Express's numeric `trust proxy` counts hops
+  // from the right including the one whose value it returns — see
+  // test/travel.test.ts's spoofed-header test for the same counting
+  // pinned down as a regression, now against the real 3-hop chain rather
+  // than an assumed 1-hop one.
   TRUST_PROXY_HOPS: z.coerce.number().int().min(0).default(0),
 });
 

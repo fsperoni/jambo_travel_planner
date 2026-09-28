@@ -357,11 +357,14 @@ describe("GET /api/location", () => {
   });
 
   it("passes the correct client IP to the location service, per TRUST_PROXY_HOPS", async () => {
-    // Confirmed empirically, not assumed: with exactly one trusted hop,
-    // Express's req.ip is the *last* entry of X-Forwarded-For — the
-    // address our own (trusted) reverse proxy actually observed — which
-    // correctly ignores a spoofed leftmost entry a client could freely set
-    // on their own request.
+    // 3, not 1: confirmed empirically against the real Render deployment
+    // (a temporary debug endpoint echoed the raw header back — see the
+    // 2026-09-28 AI_USAGE.md entry), not assumed. Render's real chain has
+    // three trusted entries in front of the app — the visitor's own IP,
+    // then Cloudflare's edge, then Render's own internal load balancer —
+    // so Express's numeric `trust proxy` must count 3 hops from the right
+    // to land back on the visitor's own IP, correctly ignoring a spoofed
+    // leftmost entry a client could freely set on their own request.
     const detectLocation = vi
       .fn()
       .mockResolvedValue({ city: calgary, source: "default", reason: "lookup-failed" });
@@ -370,11 +373,11 @@ describe("GET /api/location", () => {
       "/api/location",
       buildApp({
         locationService: createFakeLocationService({ detectLocation }),
-        trustProxyHops: 1,
+        trustProxyHops: 3,
       }),
-    ).set("X-Forwarded-For", "9.9.9.9, 203.0.113.5");
+    ).set("X-Forwarded-For", "9.9.9.9, 70.65.124.163, 162.159.102.35, 10.192.34.107");
 
-    expect(detectLocation).toHaveBeenCalledWith("203.0.113.5");
+    expect(detectLocation).toHaveBeenCalledWith("70.65.124.163");
   });
 
   it("ignores X-Forwarded-For entirely when TRUST_PROXY_HOPS is 0 (the local-dev default)", async () => {

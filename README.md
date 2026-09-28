@@ -500,12 +500,16 @@ experience, not a broken one; the app must still work when detection doesn't.
 [Environment variables](#environment-variables)) being set correctly for the actual deployment
 topology — get it wrong and either a spoofed `X-Forwarded-For` header is trusted (a client could
 claim to be any IP it likes) or the app always sees its own reverse proxy's IP instead of the
-real visitor's. This app's numeric `trust proxy` behavior was verified empirically before being
-relied on, not assumed from memory: with exactly one trusted hop (the setting used in
-production, behind Render's own load balancer), Express takes the _last_ entry of
-`X-Forwarded-For` as `req.ip` — the address that hop actually observed — which correctly ignores
-anything a client prepends to that header on their own request. Confirmed with a real Supertest
-request in `test/travel.test.ts`, not just reasoned about.
+real visitor's, which is exactly what happened in production initially (see
+[Deployment architecture](#deployment-architecture)): `TRUST_PROXY_HOPS` was assumed to be `1`
+without checking the real topology, and it's actually `3` — Render sits behind Cloudflare's edge
+and its own internal load balancer, two trusted hops beyond the visitor, not one. With the
+correct hop count, Express takes the entry of `X-Forwarded-For` that many positions from the
+right as `req.ip` — the visitor's own address, as Cloudflare (the first trusted hop) directly
+observed it — which correctly ignores anything a client prepends to that header on their own
+request. Confirmed with a real Supertest request in `test/travel.test.ts` against the real
+3-hop chain, not just reasoned about, and originally found by echoing the real header back from
+a live request rather than guessed.
 
 **Local development is short-circuited before any provider call.** `domain/client-ip.ts`'s
 `normalizeIp` strips the `::ffff:` prefix Node adds to an IPv4 address on a dual-stack socket,
@@ -706,20 +710,20 @@ directory as a starting point.
 **Backend** — validated at startup (`apps/api/src/config/env.ts`); the process refuses to
 start if one is missing or malformed, with a message naming the offending variable.
 
-| Variable                   | Required | Default                                        | Purpose                                                                                                                                                                                                                                                                            |
-| -------------------------- | -------- | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `NODE_ENV`                 | no       | `development`                                  | `development` \| `test` \| `production`                                                                                                                                                                                                                                            |
-| `PORT`                     | no       | `3000`                                         | HTTP port the API listens on                                                                                                                                                                                                                                                       |
-| `CORS_ORIGINS`             | no       | `http://localhost:5173`                        | Comma-separated list of origins allowed to call the API from a browser                                                                                                                                                                                                             |
-| `DATABASE_URL`             | **yes**  | —                                              | PostgreSQL connection string, e.g. `postgres://user:pass@host:5432/db`                                                                                                                                                                                                             |
-| `JWT_SECRET`               | **yes**  | —                                              | HS256 signing secret for access tokens; at least 32 characters                                                                                                                                                                                                                     |
-| `ACCESS_TOKEN_TTL_SECONDS` | no       | `900` (15 min)                                 | How long an access token stays valid, in seconds                                                                                                                                                                                                                                   |
-| `OPEN_METEO_BASE_URL`      | no       | `https://api.open-meteo.com`                   | Base URL for the weather client — overridden in integration tests to point at a local stub, never at the real API                                                                                                                                                                  |
-| `WIKIPEDIA_BASE_URL`       | no       | `https://en.wikipedia.org`                     | Base URL for the description client — same overridable-for-tests reasoning as `OPEN_METEO_BASE_URL`                                                                                                                                                                                |
-| `WIKIPEDIA_USER_AGENT`     | no       | a local-dev-only placeholder, no personal info | Sent as the `User-Agent` header on every Wikipedia request, per [Wikimedia's policy](https://foundation.wikimedia.org/wiki/Policy:Wikimedia_Foundation_User-Agent_Policy) — set this to a real contact URL for production; see [Why these external APIs](#why-these-external-apis) |
-| `IP_GEOLOCATION_BASE_URL`  | no       | `https://ipwho.is`                             | Base URL for the IP-geolocation client — same overridable-for-tests reasoning as the other two base URLs                                                                                                                                                                           |
-| `DEFAULT_CITY_ID`          | no       | `calgary`                                      | The city shown when IP detection can't run or doesn't produce a usable result — must be a real id in `domain/city-catalogue.ts`, checked at startup; see [IP-based geolocation](#ip-based-geolocation)                                                                             |
-| `TRUST_PROXY_HOPS`         | no       | `0`                                            | Reverse-proxy hop count for Express's `trust proxy` setting; `0` for local dev (no proxy), `1` in production behind Render's own load balancer — see [IP-based geolocation](#ip-based-geolocation) for what this number actually does and why it was verified empirically          |
+| Variable                   | Required | Default                                        | Purpose                                                                                                                                                                                                                                                                                                                          |
+| -------------------------- | -------- | ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `NODE_ENV`                 | no       | `development`                                  | `development` \| `test` \| `production`                                                                                                                                                                                                                                                                                          |
+| `PORT`                     | no       | `3000`                                         | HTTP port the API listens on                                                                                                                                                                                                                                                                                                     |
+| `CORS_ORIGINS`             | no       | `http://localhost:5173`                        | Comma-separated list of origins allowed to call the API from a browser                                                                                                                                                                                                                                                           |
+| `DATABASE_URL`             | **yes**  | —                                              | PostgreSQL connection string, e.g. `postgres://user:pass@host:5432/db`                                                                                                                                                                                                                                                           |
+| `JWT_SECRET`               | **yes**  | —                                              | HS256 signing secret for access tokens; at least 32 characters                                                                                                                                                                                                                                                                   |
+| `ACCESS_TOKEN_TTL_SECONDS` | no       | `900` (15 min)                                 | How long an access token stays valid, in seconds                                                                                                                                                                                                                                                                                 |
+| `OPEN_METEO_BASE_URL`      | no       | `https://api.open-meteo.com`                   | Base URL for the weather client — overridden in integration tests to point at a local stub, never at the real API                                                                                                                                                                                                                |
+| `WIKIPEDIA_BASE_URL`       | no       | `https://en.wikipedia.org`                     | Base URL for the description client — same overridable-for-tests reasoning as `OPEN_METEO_BASE_URL`                                                                                                                                                                                                                              |
+| `WIKIPEDIA_USER_AGENT`     | no       | a local-dev-only placeholder, no personal info | Sent as the `User-Agent` header on every Wikipedia request, per [Wikimedia's policy](https://foundation.wikimedia.org/wiki/Policy:Wikimedia_Foundation_User-Agent_Policy) — set this to a real contact URL for production; see [Why these external APIs](#why-these-external-apis)                                               |
+| `IP_GEOLOCATION_BASE_URL`  | no       | `https://ipwho.is`                             | Base URL for the IP-geolocation client — same overridable-for-tests reasoning as the other two base URLs                                                                                                                                                                                                                         |
+| `DEFAULT_CITY_ID`          | no       | `calgary`                                      | The city shown when IP detection can't run or doesn't produce a usable result — must be a real id in `domain/city-catalogue.ts`, checked at startup; see [IP-based geolocation](#ip-based-geolocation)                                                                                                                           |
+| `TRUST_PROXY_HOPS`         | no       | `0`                                            | Reverse-proxy hop count for Express's `trust proxy` setting; `0` for local dev (no proxy), `3` in production — Render sits behind Cloudflare's edge and its own internal load balancer, two trusted hops beyond the visitor — see [Deployment architecture](#deployment-architecture) for how that number was found, not assumed |
 
 Not validated by `config/env.ts` (read directly by their respective one-off scripts, not by the
 running server): `TEST_DATABASE_URL` (integration tests and `db:migrate:test`), `SEED_USERS`
@@ -868,11 +872,13 @@ helper attaches a valid Bearer token so each test doesn't repeat that line) — 
 Bearer-protection coverage (missing/invalid/valid token) and the structured 502/504 response
 `middleware/error-handler.ts` produces when a service reports an upstream failure.
 `/api/location`'s tests include the app's numeric `trust proxy` setting end to end, over a real
-Supertest request rather than a unit test of Express's own internals: with `TRUST_PROXY_HOPS=1`
-and a spoofed leftmost `X-Forwarded-For` entry, the location service receives the correct
-(rightmost, actually-observed) address — the exact behavior verified empirically while
-designing the feature, now pinned down as a regression test — and with `TRUST_PROXY_HOPS=0`
-(the local-dev default), the header is ignored entirely. `/api/weather`'s tests cover
+Supertest request rather than a unit test of Express's own internals: with `TRUST_PROXY_HOPS=3`
+(the real production value — see [Deployment architecture](#deployment-architecture) for how
+that number was found) and a spoofed leftmost `X-Forwarded-For` entry ahead of the real 3-hop
+chain, the location service receives the correct (visitor's own) address — the exact behavior
+verified empirically against the live deployment, now pinned down as a regression test — and
+with `TRUST_PROXY_HOPS=0` (the local-dev default), the header is ignored entirely.
+`/api/weather`'s tests cover
 coordinate validation over real HTTP (missing, out-of-range, blank/whitespace, hex/exponential,
 and a repeated query param, alongside the valid-`0` and valid-coordinate happy paths) and the
 structured 502/504 response for an upstream failure.
@@ -1026,30 +1032,45 @@ running process still reports `NODE_ENV=production` correctly.
 - **Build Command:** `npm install --include=dev && npm run build -w @jambo/api`
 - **Start Command:** `npm run start -w @jambo/api`
 
-**`TRUST_PROXY_HOPS=1` in production.** Render sits exactly one reverse proxy in front of this
-app, matching the hop count the [IP-based geolocation](#ip-based-geolocation) section's
-empirical local verification was built for. An earlier version of this section claimed a
-`source: "default", reason: "lookup-failed"` response from a real deployed request proved the
-hop count was correct — that claim was wrong, and worth recording rather than quietly fixing:
-a request through Render's real proxy chain does return `lookup-failed`, but that observation
-alone is ambiguous. It's also exactly what a _too-low_ hop count would produce: Express would
-then resolve `req.ip` to Render's own internal proxy address rather than the real visitor's,
-which isn't loopback (so `isLoopback()` doesn't short-circuit it into `"local-development"`) but
-_is_ a private/reserved address, which the geolocation provider correctly rejects — landing on
-the same `"lookup-failed"` reason a genuine provider outage would. The one check that actually
-distinguishes "hop count is right, the provider failed" from "hop count is wrong" is a request
-with a spoofed `X-Forwarded-For` header: `/api/location` should return the real visitor's city
-regardless of what a client claims in that header (correct — Render's own proxy is trusted, a
-client's claim isn't), not the spoofed address's city (would mean too many hops are trusted) and
-not a fallback either (would mean too few). This is a manual check against the live deployment,
-outside what any automated test in this repository can verify.
+**`TRUST_PROXY_HOPS=3` in production — not 1.** An earlier version of this section assumed
+Render sits exactly one reverse proxy in front of this app and set `TRUST_PROXY_HOPS=1`
+accordingly. That assumption was wrong, and it broke IP detection in production the entire time:
+with `1`, Express resolved `req.ip` to Render's own internal load balancer's address — private,
+not the visitor's — which the geolocation provider correctly rejected, landing on
+`reason: "lookup-failed"`. This is genuinely indistinguishable from a real provider outage by
+symptom alone (both a wrong hop count landing on a private address, _and_ a correct hop count
+hitting a real outage, produce the identical `lookup-failed`), which is exactly why an earlier
+pass's claim that a `lookup-failed` response "proved" the hop count was correct was itself wrong
+— recorded here rather than quietly fixed, the same as the `TRUST_PROXY_HOPS=1` mistake this
+paragraph replaces.
+
+Found by deploying a temporary debug endpoint (not by guessing, and not by trusting a web search
+that surfaced a suspiciously repetitive "Render has three hops" claim across several unrelated
+repos — treated as unverified until confirmed independently) that echoed the raw
+`X-Forwarded-For` header and the resolved `req.ip` back in `/api/location`'s own response body —
+visible only to the requester, never logged or persisted, so it never touched the
+[IP handling](#security-considerations) policy of not logging a visitor's IP. One real request
+from a real browser showed the actual chain: `"<visitor IP>, <Cloudflare edge IP>, <Render's own
+internal load balancer IP>"` — three entries, with the visitor's own IP added by Cloudflare, not
+the client, since a normal browser never sets this header itself. `TRUST_PROXY_HOPS=3` correctly
+resolves `req.ip` back to that first (visitor's) entry regardless of anything a client might
+prepend, the same counting-from-the-right mechanism `test/travel.test.ts`'s spoofed-header test
+already pinned down — now against the real 3-hop chain instead of an assumed 1-hop one. See this
+date's `AI_USAGE.md` entry for the full diagnostic.
+
+**The verification this replaces** is still the right one to run after any future proxy-topology
+change: a plain request should return the real visitor's city with `source: "ip"`, and the same
+request with a spoofed `X-Forwarded-For` header should return the real visitor's city too, not
+the spoofed address's — proving the trusted hop count, not just that detection ran at all. This
+remains a manual check against the live deployment, outside what any automated test in this
+repository can verify.
 
 **Environment variables actually set on Render** (see [Environment variables](#environment-variables)
 for what each one does): `NODE_ENV=production`, `DATABASE_URL` (Neon's pooled connection
 string), `JWT_SECRET` (a real random secret, generated once for this deployment — never the
 local-dev one), `ACCESS_TOKEN_TTL_SECONDS=3600` (not the 15-minute dev default — see
 [Trade-offs](#trade-offs) for why, given the refresh-token enhancement is out of scope for
-this submission), `TRUST_PROXY_HOPS=1`, `DEFAULT_CITY_ID=calgary`, `WIKIPEDIA_USER_AGENT` (set
+this submission), `TRUST_PROXY_HOPS=3`, `DEFAULT_CITY_ID=calgary`, `WIKIPEDIA_USER_AGENT` (set
 to a real, reachable contact — this repository's own GitHub URL — rather than a personal email,
 per [Why these external APIs](#why-these-external-apis)), and `CORS_ORIGINS` (the Vercel deployment's exact origin, no
 trailing slash — a trailing slash or an accidentally-blanked value both silently reject every
