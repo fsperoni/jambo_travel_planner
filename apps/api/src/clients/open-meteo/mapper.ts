@@ -1,9 +1,5 @@
 import { describeWeatherCode } from "../../domain/weather-codes.js";
-import type {
-  CurrentWeather,
-  DailyForecast,
-  WeatherReport,
-} from "../../services/weather.service.js";
+import type { CurrentWeather, DailyForecast, WeatherReport } from "../../types/weather-report.js";
 import type { OpenMeteoForecastResponse } from "./raw-types.js";
 
 const UNITS = {
@@ -46,7 +42,7 @@ export function mapForecastResponse(raw: OpenMeteoForecastResponse): WeatherRepo
     allowedForecastDates: {
       min: localDate,
       // Open-Meteo is asked for exactly 7 days (client.ts), so index 5 is
-      // "today + 5" — the boundary Stage 7's date picker enforces.
+      // "today + 5" — the boundary the forecast-date picker enforces.
       max: raw.daily.time[5] ?? localDate,
     },
     units: UNITS,

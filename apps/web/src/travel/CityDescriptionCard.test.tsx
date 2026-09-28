@@ -2,14 +2,11 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { CityDescriptionCard } from "./CityDescriptionCard";
 import type { CityDescription } from "../api/types";
+import { MOCK_CITY_DESCRIPTION } from "../test/fixtures";
 
 describe("CityDescriptionCard", () => {
   it("shows the description text and a Wikipedia attribution link when both are present", () => {
-    const cityDescription: CityDescription = {
-      title: "Calgary",
-      description: "Calgary is the largest city in the Canadian province of Alberta.",
-      sourceUrl: "https://en.wikipedia.org/wiki/Calgary",
-    };
+    const cityDescription = MOCK_CITY_DESCRIPTION;
 
     render(<CityDescriptionCard cityDescription={cityDescription} />);
 

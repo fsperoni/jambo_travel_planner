@@ -1,3 +1,5 @@
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fetchJson } from "./http.js";
 
@@ -5,7 +7,8 @@ import { fetchJson } from "./http.js";
 // pulling in a request-mocking library) — consistent with how the rest of
 // this backend's unit tests inject a fake collaborator instead of
 // intercepting network traffic; that style is reserved for the frontend
-// (MSW), which has a real browser-fetch boundary to simulate.
+// (MSW), which has a real browser-fetch boundary to simulate. One test
+// below is a deliberate exception — see its own comment for why.
 describe("fetchJson", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -114,5 +117,49 @@ describe("fetchJson", () => {
       status: 502,
       code: "UPSTREAM_ERROR",
     });
+  });
+
+  it("throws a 502 UpstreamError (not an unhandled SyntaxError) when a 2xx response body isn't valid JSON", async () => {
+    // A real failure mode: an upstream can return 200 with an HTML error
+    // page or empty body instead of JSON (a misconfigured proxy, a CDN
+    // error page). Without this, `response.json()`'s SyntaxError would
+    // propagate uncaught past this function, and the central error handler
+    // would map it to a generic 500 instead of the 502 every other upstream
+    // failure in this file produces.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response("<html>not json</html>", { status: 200 })),
+    );
+
+    await expect(fetchJson("https://example.com/data", { timeoutMs: 1000 })).rejects.toMatchObject({
+      status: 502,
+      code: "UPSTREAM_ERROR",
+    });
+  });
+
+  it("throws a 504 UpstreamError (not a 502) when headers arrive but the body then stalls", async () => {
+    // A real local server, not a stubbed `fetch` — every stubbed `Response`
+    // elsewhere in this file is already fully materialized, so none of
+    // them can reproduce a response that stalls mid-body the way a real
+    // stream can. This is the actual bug Codex's review found: a body-read
+    // timeout was being reported as "invalid JSON" (502) instead of a
+    // timeout (504), because the earlier fix only checked the *shape* of
+    // response.json()'s rejection, not whether the shared AbortSignal had
+    // actually timed out.
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.write('{"partial":'); // headers + a partial body, then never finishes
+    });
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const { port } = server.address() as AddressInfo;
+
+    try {
+      await expect(
+        fetchJson(`http://localhost:${port}/data`, { timeoutMs: 100 }),
+      ).rejects.toMatchObject({ status: 504, code: "UPSTREAM_ERROR" });
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });

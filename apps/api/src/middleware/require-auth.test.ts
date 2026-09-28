@@ -2,15 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { NextFunction, Request, Response } from "express";
 import { requireAuth } from "./require-auth.js";
 import { UnauthorizedError } from "../errors/app-error.js";
-import type { TokenService } from "../services/token.service.js";
-
-function fakeTokenService(overrides: Partial<TokenService> = {}): TokenService {
-  return {
-    signAccessToken: vi.fn(),
-    verifyAccessToken: vi.fn(),
-    ...overrides,
-  };
-}
+import { createFakeTokenService as fakeTokenService } from "../../test/helpers/fakes.js";
 
 function fakeRequest(headers: Record<string, string> = {}): Request {
   return {

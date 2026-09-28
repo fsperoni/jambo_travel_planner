@@ -5,11 +5,17 @@ import reactHooks from "eslint-plugin-react-hooks";
 import reactRefresh from "eslint-plugin-react-refresh";
 import eslintConfigPrettier from "eslint-config-prettier";
 
-// One shared flat config for the whole monorepo. Type-aware lint rules are
-// deliberately not enabled: `tsc --noEmit` (the `typecheck` script) already
-// catches type errors in a separate, faster CI step, so turning on
-// typescript-eslint's type-checked rules here would just duplicate that work
-// while slowing every lint run down.
+// One shared flat config for the whole monorepo. Type-aware lint rules
+// (typescript-eslint's "type-checked" presets) are deliberately not
+// enabled — not because they'd only duplicate what `tsc --noEmit` already
+// catches (they wouldn't: rules like `no-floating-promises` flag real
+// problems `tsc` itself accepts, e.g. an unawaited async call whose
+// rejection would otherwise go unhandled), but for scope and speed at this
+// project's size: they need a full type-checking pass to run at all,
+// which meaningfully slows down every lint run, and this project already
+// runs `tsc --noEmit` as its own separate, faster step. A rule like
+// `no-floating-promises` would be worth adding selectively if a real case
+// of it showed up.
 export default tseslint.config(
   {
     ignores: [

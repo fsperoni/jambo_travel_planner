@@ -1,8 +1,16 @@
 // Falls back to the API's default local dev port so `npm run dev` works
 // with zero required setup; the real deployed URL is provided via
 // VITE_API_BASE_URL at build time (see the README's environment-variables
-// section) once the app is actually deployed.
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000";
+// section) once the app is actually deployed. Exported so tests and other
+// modules that need to know it (e.g. MSW handlers) share this one
+// definition instead of re-declaring the literal.
+export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3000";
+
+// Shown whenever a failure isn't an ApiError (a network error, a thrown
+// non-Error value) — i.e. there's no server-provided message to show
+// instead. Exported so every call site uses the exact same wording rather
+// than each re-typing its own copy that could quietly drift out of sync.
+export const GENERIC_ERROR_MESSAGE = "Something went wrong. Please try again.";
 
 /** Mirrors the backend's `{ error: { code, message, details? } }` envelope. */
 export class ApiError extends Error {
@@ -17,6 +25,13 @@ export class ApiError extends Error {
     this.code = code;
     this.details = details;
   }
+}
+
+/** The message a UI should show for a caught failure: an ApiError's own
+ *  message when there is one (the server's own explanation), or the
+ *  generic fallback otherwise. */
+export function toErrorMessage(err: unknown): string {
+  return err instanceof ApiError ? err.message : GENERIC_ERROR_MESSAGE;
 }
 
 interface AuthHandlers {
@@ -75,7 +90,7 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
     throw new ApiError(
       response.status,
       error?.code ?? "UNKNOWN_ERROR",
-      error?.message ?? "Something went wrong. Please try again.",
+      error?.message ?? GENERIC_ERROR_MESSAGE,
       error?.details,
     );
   }

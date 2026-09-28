@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { createDescriptionService, type CityDescription } from "./description.service.js";
+import { createDescriptionService } from "./description.service.js";
+import type { CityDescription } from "../types/city-description.js";
 
 describe("description service", () => {
   it("delegates to the injected Wikipedia client with the given title", async () => {

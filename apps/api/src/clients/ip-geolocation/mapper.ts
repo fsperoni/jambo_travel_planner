@@ -1,4 +1,4 @@
-import type { IpApiResponse } from "./raw-types.js";
+import type { IpWhoIsResponse } from "./raw-types.js";
 
 export interface IpLocation {
   city: string;
@@ -10,20 +10,17 @@ export interface IpLocation {
 
 /**
  * `null` covers every "couldn't determine a location" outcome as one
- * outcome, deliberately not distinguished further here: ipapi.co's own
- * {error: true} body (reserved/invalid IP, or any other reason string it
- * might use), and a "successful" response that's simply missing the
- * fields this app actually needs. `services/location.service.ts` treats
- * all of these identically — fall back to the default city — so there's
- * no caller that would do anything different with a more specific reason,
- * the same reasoning as Wikipedia's disambiguation/404 collapsing to one
- * `null` in clients/wikipedia/mapper.ts.
+ * outcome, deliberately not distinguished further here: ipwho.is's own
+ * `{success: false}` body (reserved/private IP, or any other reason it
+ * might give), and a "successful" response that's simply missing a field
+ * this app needs. `services/location.service.ts` treats all of these
+ * identically — fall back to the default city — so there's no caller that
+ * would do anything different with a more specific reason, the same
+ * reasoning as Wikipedia's disambiguation/404 collapsing to one `null` in
+ * clients/wikipedia/mapper.ts.
  */
-export function mapIpApiResponse(raw: IpApiResponse): IpLocation | null {
-  // IpApiErrorResponse.error is always literally `true` (never `false`) —
-  // checking its presence alone is enough to discriminate the union, and
-  // lets TypeScript narrow `raw` to IpApiSuccessResponse below.
-  if ("error" in raw) {
+export function mapIpWhoIsResponse(raw: IpWhoIsResponse): IpLocation | null {
+  if (!raw.success) {
     return null;
   }
 

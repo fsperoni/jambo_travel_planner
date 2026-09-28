@@ -8,6 +8,18 @@
 export const E2E_EMAIL = "e2e@example.com";
 export const E2E_PASSWORD = "e2e-test-password-123";
 
+// Dedicated ports, distinct from the normal local-dev ones (3000/5173) —
+// so this suite never collides with a developer's own `npm run dev`
+// already running in another terminal. Defined once here (rather than
+// separately in playwright.config.ts and stub-servers.ts, which both need
+// them) so the two can't silently drift out of sync with each other.
+export const PORTS = {
+  api: 4000,
+  web: 4173,
+  openMeteoStub: 4010,
+  wikipediaStub: 4011,
+} as const;
+
 // Real coordinates/titles from domain/city-catalogue.ts — the stub servers
 // key their fixture responses off these, so the app's real (unmocked)
 // catalogue lookup still has to produce the right latitude/longitude/title

@@ -1,7 +1,6 @@
-import { useEffect, useState } from "react";
-import { ApiError } from "../api/http";
 import { getCityDescription } from "../api/travel.api";
 import type { CityDescription } from "../api/types";
+import { useAbortableRequest } from "../lib/useAbortableRequest";
 
 interface CityDescriptionState {
   cityDescription: CityDescription | null;
@@ -17,40 +16,17 @@ interface CityDescriptionState {
  * split-vs-aggregated-endpoints trade-off. If Wikipedia is slow or down,
  * the weather card still loads and renders normally; a description failure
  * doesn't take the whole page down with it, and vice versa.
+ *
+ * A thin wrapper around useAbortableRequest — see that hook for the
+ * abort/loading/error/retry mechanics shared with useCityData.
  */
 export function useCityDescription(wikipediaTitle: string | null): CityDescriptionState {
-  const [cityDescription, setCityDescription] = useState<CityDescription | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [retryCount, setRetryCount] = useState(0);
+  const { data, isLoading, error, retry } = useAbortableRequest<CityDescription>(
+    wikipediaTitle,
+    // Non-null: useAbortableRequest only ever calls this when `key`
+    // (wikipediaTitle) is non-null.
+    (signal) => getCityDescription(wikipediaTitle!, signal),
+  );
 
-  useEffect(() => {
-    if (wikipediaTitle === null) {
-      setCityDescription(null);
-      setError(null);
-      setIsLoading(false);
-      return;
-    }
-
-    // Same stale-response guard as useCityData — see that hook for why.
-    const controller = new AbortController();
-    setIsLoading(true);
-    setError(null);
-
-    getCityDescription(wikipediaTitle, controller.signal)
-      .then((result) => {
-        setCityDescription(result);
-      })
-      .catch((err: unknown) => {
-        if (controller.signal.aborted) return;
-        setError(err instanceof ApiError ? err.message : "Something went wrong. Please try again.");
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setIsLoading(false);
-      });
-
-    return () => controller.abort();
-  }, [wikipediaTitle, retryCount]);
-
-  return { cityDescription, isLoading, error, retry: () => setRetryCount((count) => count + 1) };
+  return { cityDescription: data, isLoading, error, retry };
 }

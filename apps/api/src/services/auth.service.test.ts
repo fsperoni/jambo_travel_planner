@@ -3,7 +3,8 @@ import { createAuthService } from "./auth.service.js";
 import { hashPassword } from "../domain/password.js";
 import { UnauthorizedError } from "../errors/app-error.js";
 import type { User, UserRepository } from "../repositories/user.repository.js";
-import type { TokenService } from "./token.service.js";
+import { TEST_USER, UNKNOWN_EMAIL } from "../../test/helpers/fixtures.js";
+import { createFakeTokenService } from "../../test/helpers/fakes.js";
 
 function fakeUserRepository(overrides: Partial<UserRepository> = {}): UserRepository {
   return {
@@ -13,18 +14,15 @@ function fakeUserRepository(overrides: Partial<UserRepository> = {}): UserReposi
   };
 }
 
-function fakeTokenService(): TokenService {
-  return {
-    signAccessToken: vi.fn().mockReturnValue("signed-token"),
-    verifyAccessToken: vi.fn(),
-  };
+function fakeTokenService() {
+  return createFakeTokenService({ signAccessToken: vi.fn().mockReturnValue("signed-token") });
 }
 
 async function makeUser(overrides: Partial<User> = {}): Promise<User> {
   return {
-    id: "user-1",
-    email: "person@example.com",
-    passwordHash: await hashPassword("correct-password"),
+    id: TEST_USER.id,
+    email: TEST_USER.email,
+    passwordHash: await hashPassword(TEST_USER.password),
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
@@ -38,16 +36,16 @@ describe("auth service: login", () => {
     const tokenService = fakeTokenService();
     const service = createAuthService({ userRepository, tokenService, accessTokenTtlSeconds: 900 });
 
-    const result = await service.login("person@example.com", "correct-password");
+    const result = await service.login(TEST_USER.email, TEST_USER.password);
 
     expect(result).toEqual({
       accessToken: "signed-token",
       expiresIn: 900,
-      user: { id: "user-1", email: "person@example.com" },
+      user: { id: TEST_USER.id, email: TEST_USER.email },
     });
     expect(tokenService.signAccessToken).toHaveBeenCalledWith({
-      sub: "user-1",
-      email: "person@example.com",
+      sub: TEST_USER.id,
+      email: TEST_USER.email,
     });
   });
 
@@ -59,7 +57,7 @@ describe("auth service: login", () => {
       accessTokenTtlSeconds: 900,
     });
 
-    const promise = service.login("nobody@example.com", "anything");
+    const promise = service.login(UNKNOWN_EMAIL, "anything");
     await expect(promise).rejects.toBeInstanceOf(UnauthorizedError);
     await expect(promise).rejects.toThrow("Invalid email or password");
   });
@@ -73,7 +71,7 @@ describe("auth service: login", () => {
       accessTokenTtlSeconds: 900,
     });
 
-    const promise = service.login("person@example.com", "wrong-password");
+    const promise = service.login(TEST_USER.email, "wrong-password");
     await expect(promise).rejects.toBeInstanceOf(UnauthorizedError);
     await expect(promise).rejects.toThrow("Invalid email or password");
   });
@@ -96,7 +94,7 @@ describe("auth service: login", () => {
     });
 
     const start = performance.now();
-    await service.login("nobody@example.com", "anything").catch(() => {});
+    await service.login(UNKNOWN_EMAIL, "anything").catch(() => {});
     const elapsedMs = performance.now() - start;
 
     // A bcrypt compare at cost factor 10 takes single-digit-to-low-double-

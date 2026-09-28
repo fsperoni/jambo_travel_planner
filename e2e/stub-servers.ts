@@ -4,6 +4,7 @@ import {
   CALGARY,
   DESCRIPTION_FIXTURES,
   FORECAST_DATES,
+  PORTS,
   SELECTED_DATE,
   TOKYO,
   WEATHER_FIXTURES,
@@ -123,20 +124,17 @@ function close(server: Server): Promise<void> {
 }
 
 export async function startStubServers(): Promise<StubServers> {
-  const openMeteoPort = 4010;
-  const wikipediaPort = 4011;
-
   const openMeteoServer = createOpenMeteoStub();
   const wikipediaServer = createWikipediaStub();
 
   await Promise.all([
-    listen(openMeteoServer, openMeteoPort),
-    listen(wikipediaServer, wikipediaPort),
+    listen(openMeteoServer, PORTS.openMeteoStub),
+    listen(wikipediaServer, PORTS.wikipediaStub),
   ]);
 
   return {
-    openMeteoUrl: `http://localhost:${openMeteoPort}`,
-    wikipediaUrl: `http://localhost:${wikipediaPort}`,
+    openMeteoUrl: `http://localhost:${PORTS.openMeteoStub}`,
+    wikipediaUrl: `http://localhost:${PORTS.wikipediaStub}`,
     async close() {
       await Promise.all([close(openMeteoServer), close(wikipediaServer)]);
     },

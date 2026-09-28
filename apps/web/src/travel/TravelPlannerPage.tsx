@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ApiError } from "../api/http";
+import { toErrorMessage } from "../api/http";
 import { getCities, getLocation } from "../api/travel.api";
 import type { City, DetectedLocation } from "../api/types";
 import { ErrorState } from "../components/ErrorState";
@@ -16,7 +16,7 @@ import styles from "./TravelPlannerPage.module.css";
 
 // A third outcome alongside "still loading" (null) and "detected
 // something" (a real DetectedLocation): GET /api/location itself being
-// unreachable. Every *provider* failure (ipapi.co down, rate-limited,
+// unreachable. Every *provider* failure (ipwho.is down, rate-limited,
 // nothing for this IP) is already handled server-side by falling back to
 // the default city — this only covers the endpoint call itself failing,
 // which the page still needs to recover from by picking some starting
@@ -49,9 +49,7 @@ export function TravelPlannerPage() {
       })
       .catch((err: unknown) => {
         if (cancelled) return;
-        setCitiesError(
-          err instanceof ApiError ? err.message : "Something went wrong. Please try again.",
-        );
+        setCitiesError(toErrorMessage(err));
       });
 
     return () => {
@@ -114,8 +112,8 @@ export function TravelPlannerPage() {
   // about *this* city's calendar, and starting the new city back at
   // "current + week only" is less surprising than silently keeping a date
   // the user picked while looking at somewhere else. (A stale-but-now-
-  // invalid date is still handled separately below, for the case where the
-  // date became invalid without a city change — e.g. time passing.)
+  // invalid date without a city change — e.g. a hand-typed out-of-range
+  // date — is handled separately below.)
   function handleCityChange(cityId: string): void {
     setSelectedCityId(cityId);
     setLocationNotice(null);
@@ -137,24 +135,45 @@ export function TravelPlannerPage() {
     weather,
     isLoading: isWeatherLoading,
     error: weatherError,
-    errorCode: weatherErrorCode,
     retry: retryWeather,
-  } = useCityData(selectedCity?.latitude ?? null, selectedCity?.longitude ?? null, selectedDate);
+  } = useCityData(selectedCity?.latitude ?? null, selectedCity?.longitude ?? null);
+
+  // The `week` entry matching the selected date, bounded by
+  // `allowedForecastDates` — `week` itself spans one day further
+  // (today..+6) than the range the picker is actually allowed to request
+  // (today..+5, see the README's timezone-handling section for why), so a
+  // plain `week.find(...)` alone would let today+6 through even though
+  // it's reachable data, not a selectable date. No network request: a
+  // forecast date never changes which report `useCityData` fetches (see
+  // its own comment), so every day it could possibly need is already
+  // sitting in `weather.week` by the time one can be picked at all.
+  const selectedDay =
+    selectedDate !== null &&
+    weather !== null &&
+    selectedDate >= weather.allowedForecastDates.min &&
+    selectedDate <= weather.allowedForecastDates.max
+      ? weather.week.find((day) => day.date === selectedDate)
+      : undefined;
 
   // A city change already clears the date proactively (handleCityChange,
-  // above) — this is the remaining case that doesn't go through that path:
-  // a date picked for the *current* city stops being valid just from time
-  // passing (its allowed range is relative to that city's own local
-  // "today", which moves forward without any city change happening at
-  // all). Rather than track a clock client-side to predict that, this lets
-  // the request go through and recovers from the one error code that means
-  // specifically "this date is no longer in range": silently drop it and
-  // let the hook refetch without it.
+  // above) — this is the remaining path to a stale `selectedDate`: nothing
+  // stops a user from typing a date straight into the native
+  // `<input type="date">` that falls outside `allowedForecastDates` (most
+  // browsers only grey out/refuse it in their own picker UI, not a hand-
+  // typed value — see ForecastDatePicker). Rather than let an unselectable
+  // date sit in the input with no visible day card and no explanation,
+  // this clears it back to "no date chosen" the moment it's no longer
+  // valid for the currently loaded report.
   useEffect(() => {
-    if (weatherErrorCode === "FORECAST_DATE_OUT_OF_RANGE" && selectedDate !== null) {
+    if (
+      selectedDate !== null &&
+      weather !== null &&
+      (selectedDate < weather.allowedForecastDates.min ||
+        selectedDate > weather.allowedForecastDates.max)
+    ) {
       setSelectedDate(null);
     }
-  }, [weatherErrorCode, selectedDate]);
+  }, [weather, selectedDate]);
 
   if (citiesError) {
     return (
@@ -222,9 +241,7 @@ export function TravelPlannerPage() {
             value={selectedDate}
             onChange={setSelectedDate}
           />
-          {weather.selectedDay && (
-            <SelectedDayCard day={weather.selectedDay} units={weather.units} />
-          )}
+          {selectedDay && <SelectedDayCard day={selectedDay} units={weather.units} />}
           <p className={styles.weatherAttribution}>
             Weather data by{" "}
             <a href="https://open-meteo.com" target="_blank" rel="noopener noreferrer">

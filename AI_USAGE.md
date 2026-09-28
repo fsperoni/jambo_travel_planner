@@ -2,7 +2,7 @@
 
 This is a running log of how AI tools were used while building this project, kept during
 development rather than reconstructed afterward, per the assignment's AI use policy. It's
-summarized in the [README](./README.md#ai-usage) once the project is feature-complete.
+summarized in the [README's AI usage section](./README.md#ai-usage).
 
 For every entry: I (Fabio) reviewed the output to understand it, and made final decisions. Where I changed or rejected something AI proposed, that's noted
 explicitly - those are usually the more interesting parts of this log.
@@ -12,6 +12,9 @@ explicitly - those are usually the more interesting parts of this log.
 - **Claude Code** - primary assistant for planning, scaffolding, implementation,
   and code review throughout this project.
 - **ChatGPT** - used ad hoc for secondary review of specific decisions where noted.
+- **OpenAI Codex** - used for one dedicated, independent adversarial review pass near
+  submission (see the 2026-09-27 "Codex review response" entry below), separate from
+  Claude Code's own day-to-day work.
 
 ## 2026-09-24 - Planning
 
@@ -703,7 +706,43 @@ test bug, recognized and avoided directly this time rather than rediscovered fro
 **Corrections requested by Fabio:** none this stage beyond the shared suggestion noted above,
 which matched the existing plan rather than changing it.
 
-## 2026-09-28 - Stage 9: Playwright end-to-end
+## 2026-09-27 - Refresh tokens (Stage 8): dropped for time
+
+**Tool:** none — a scope decision Fabio made directly, not an AI-assisted task.
+
+With the milestone gate (Stages 0-7) complete, tested, and polished, Fabio decided to drop the
+conditional refresh-token enhancement (made conditional back in the
+["Final simplification pass"](#2026-09-25---final-simplification-pass-before-stage-2) entry
+above) rather than build it: "Let's drop refresh tokens - I won't have time to do it. We can add
+it to the list of improvements." No code exists for it and none was written; the 15-minute
+default access-token TTL was raised to 60 minutes in production instead, as the accepted
+stand-in without a refresh mechanism. Documented in the README's
+[Authentication](./README.md#authentication) section and, in full, under
+[What I'd improve with more time](./README.md#what-id-improve-with-more-time).
+
+## 2026-09-27 - Deployment (Vercel + Render + Neon)
+
+**Tool:** Claude Code, for diagnosis; the actual console clicks (creating services, setting env
+vars, triggering redeploys) were done by Fabio, since this session has no browser-automation
+tooling.
+
+Deployed the frontend to Vercel, the backend to Render, and PostgreSQL to Neon, all on their
+default free-tier domains — Fabio was already logged into all three in his own browser. Three
+real, live issues came up during setup and were diagnosed remotely (curl, response-header
+inspection, grepping the actual served JS bundle) rather than guessed at: a Render build
+failure, a wrong frontend API URL baked into a built bundle, and a CORS configuration that
+silently rejected every origin. Per Fabio's instruction ("those were typos and don't need to be
+in AI_USAGE"), the specifics live only in the README's
+[Deployment architecture](./README.md#deployment-architecture) section, not duplicated here —
+not every fixed mistake belongs in this log; deployment/infra typos documented in the project's
+own technical documentation don't also need a disclosure entry.
+
+Also verified for real once deployed, not just locally: `TRUST_PROXY_HOPS=1` against Render's
+actual reverse proxy (`/api/location` correctly returns `reason: "lookup-failed"` for a real
+external IP, not `"local-development"`, which is what a misconfigured hop count would have
+produced instead).
+
+## 2026-09-27 - Stage 9: Playwright end-to-end
 
 **Tool:** Claude Code.
 
@@ -755,7 +794,7 @@ risk reusing the database introduces.
 
 **Corrections requested by Fabio:** none this stage.
 
-## 2026-09-28 - Stage 10: polish (plus three specific requests)
+## 2026-09-27 - Stage 10: polish (plus three specific requests)
 
 **Tool:** Claude Code.
 
@@ -842,3 +881,221 @@ a clean pass.
 **Corrections requested by Fabio:** none directly on implementation. The three requests that
 opened this stage (IP question, city sort, date-clear) were new asks, not corrections to
 anything already built.
+
+## 2026-09-27 - Pre-submission review: code smells, test reuse, coverage, requirements
+
+**Tool:** Claude Code.
+
+Before submitting, Fabio asked for four things: a code-smell review, a test-reuse review
+(repeated emails/passwords/URLs that should be shared constants), a coverage check, and a
+cross-check against the assignment PDF for anything missing. Findings, verified rather than
+assumed, and each fixed:
+
+**A real, previously untested failure path in `fetchJson`, caught by writing the failing test
+first.** A 2xx response whose body isn't valid JSON (an HTML error page from a misconfigured
+proxy, an empty body) made `response.json()` throw an uncaught `SyntaxError`, which the central
+error handler would map to a generic 500 — inconsistent with every other upstream failure in
+that file, which maps to a structured 502. Added the test, confirmed it failed against the
+existing code (a real `SyntaxError`, not the expected `UpstreamError`), then wrapped the parse
+in a `try/catch` and confirmed the same test now passes.
+
+**A real coverage-scope blind spot, not just a low number.** The API's `vitest.config.ts`
+`coverage.include` list predated the three upstream clients (`open-meteo/client.ts`,
+`wikipedia/client.ts`, `ip-geolocation/client.ts`) and never included them — so the reported
+97%+ number was accurate for what it measured but silently excluded three files with zero test
+coverage: URL construction, query parameters, required headers, encoding. Added a
+`client.test.ts` next to each (stubbing `fetch` directly, the same style as the rest of the
+backend's unit tests), then widened `coverage.include` to all of `src/`, excluding only genuinely
+untestable files (`server.ts`, `db/pool.ts`, type-only `types/**` and `**/raw-types.ts`). The
+resulting number — 97.99% statements, 92.18% branches, 100% functions, 98.34% lines — is now an
+honest measurement of real logic, not a number narrowed to look complete.
+
+**Duplicated test fixtures, consolidated rather than left to drift.** Several literals were
+independently reinvented across files: `"http://localhost:3000"` in five web test files, four
+near-identical weather-report builders (`reportWith`, three separate `makeReport`s), a duplicated
+`fakeTokenService()` in two API test files, a JWT-secret literal defined separately in two
+places, and the E2E suite's four stub/dev-server ports hard-coded in both `playwright.config.ts`
+and `stub-servers.ts` with no shared source of truth. Consolidated into `apps/api/test/helpers/
+fixtures.ts` (+ `createFakeTokenService` in the existing `fakes.ts`), `apps/web/src/test/
+fixtures.ts` (with `msw/handlers.ts` now holding only handlers, built from those fixtures), and
+`e2e/fixtures.ts`'s new `PORTS` export. Verified nothing's behavior changed by re-running every
+affected suite before and after — same pass/fail counts throughout.
+
+**Two moderate refactors, done rather than just flagged, with behavior verified unchanged.**
+`useCityData` and `useCityDescription` had independently implemented the same ~40-line
+abort/loading/error/retry state machine; extracted a shared `lib/useAbortableRequest.ts` and
+made both thin wrappers over it. And the backend's `WeatherReport`/`CityDescription` DTOs lived
+in the service files that also imported the clients that produced them, creating a two-way
+import between a client and its service (worked around, before this, with a duplicated inline
+type in `description.service.ts`); moved both into `src/types/`, which both a client and its
+service now import independently. In both cases, the existing test suites — written against the
+public shape, not the internal implementation — needed no changes and still passed unmodified,
+which is the intended evidence that behavior didn't change, only where the logic lives.
+
+**Stale comments and narrative "Stage N" references, rewritten into present-tense documentation**
+across `apps/`, `e2e/`, and `.github/workflows/ci.yml` — this review's own de-staging pass turned
+the README from a stage-by-stage build log (appropriate while the project was in progress) into
+documentation for a finished submission, per Fabio's request. In the process, found and fixed two
+inconsistencies between `AI_USAGE.md` and the README it's meant to summarize: this file's Stage 9
+and Stage 10 entries were dated `2026-09-28`, a day after both stages' actual commits
+(`2026-09-27`, confirmed against `git log`); and there was no entry at all documenting the
+decision to drop Stage 8 (refresh tokens) or the deployment stage — both added above, in their
+correct chronological place.
+
+**Requirements check against the assignment PDF:** every functional requirement is met. The
+gaps were in the deliverables: the README's "Known limitations" section (explicitly required by
+the assignment) and "Trade-offs" section were still `_Coming in Stage 11_` placeholders, along
+with a "work in progress" banner at the top — all written for real as part of this pass.
+Also added `.env.example` files for both apps (variables existed and were documented in the
+README, but there was no copyable template) and a `npm run build` step in CI, which would have
+caught the real Render build failure (documented in the README's deployment section) before a
+live deploy did, had it existed at the time.
+
+**Corrections requested by Fabio:** to keep this log itself consistent with the README it
+summarizes, this file got the same review treatment as the README, rather than only having one
+new entry appended on top of older, unreviewed ones.
+
+## 2026-09-27 - Codex review response: IP provider switch, real edge-case fixes, and three corrections to my own initial assessment
+
+**Tool:** Claude Code, responding to a separate OpenAI Codex review Fabio requested. Codex wrote
+up its findings in a local working document; my own item-by-item assessment of that review (what
+to implement, what to only document, what to skip, and why) was written up the same way. Neither
+document is committed to this repository — both were local, working artifacts for this pass, not
+submission deliverables — so this entry is the durable record of that review instead.
+
+**Every claim in Codex's report was independently reproduced before being trusted, not accepted
+on the report's word alone:** `z.coerce.number()` turning `""`/`"  "` into `0`, confirmed with a
+throwaway Zod script; `formatLocalTime`'s DST-gap bug, confirmed by running the actual function
+under `TZ=America/Edmonton` (this environment's own default zone, as it happens) and getting
+"3:30 AM" for a string that says "02:30"; `errorHandler` mapping `express.json()`'s own errors to
+a 500, confirmed with a real Express app and a real malformed-JSON request; and, most
+importantly, ipapi.co's pricing page stating its free tier is _"not meant for use in production
+or deployments"_ — confirmed by fetching the page directly — combined with a fresh `curl` to the
+live API returning a real `429` that same day. That last one meant the deployed app had likely
+never successfully detected a real visitor's location at all, not just occasionally hit a quota.
+
+**Three corrections Fabio made to an earlier draft of my own assessment, before any code was
+written, recorded honestly rather than smoothed over:**
+
+1. **The timeout fix I'd planned (`err.name === "TimeoutError"` in `response.json()`'s catch)
+   was too narrow.** I'd verified it worked on this runtime with a real stalled-body repro, but
+   Fabio pointed out the rejection's exact shape isn't spec-guaranteed for every engine/consumer.
+   Fixed by checking the shared `AbortSignal`'s own state (guaranteed by spec once it fires)
+   instead, with the error's own shape kept as a fallback specifically so existing tests that
+   stub `fetch()` directly — never touching the real signal — still pass. Implementing this
+   exposed a real regression of my own: the signal-only version broke an existing test
+   ("throws a 504 UpstreamError when the request times out"), caught immediately by running the
+   suite, not discovered later.
+2. **"Trim the coordinate string" wasn't the actual fix.** `""` still coerces to `0` after
+   trimming — the fix needed to explicitly reject the empty string (and, once actually testing
+   edge cases, "0x10" and "1e1", which `Number()` also happily parses as 16 and 10). Landed on a
+   `.trim().regex(/^-?\d+(\.\d+)?$/)` check before any numeric conversion at all.
+3. **`lookup-failed` from the deployed app does not prove `TRUST_PROXY_HOPS` is configured
+   correctly**, and an earlier version of this assessment (and the README) claimed it did. A
+   too-low hop count resolves `req.ip` to Render's own private proxy address instead of the real
+   visitor's — not loopback, so it doesn't short-circuit into `"local-development"`, but still a
+   reserved address the provider correctly rejects, landing on the exact same `"lookup-failed"`
+   reason a correct-hop-count-but-provider-failure would. The single observation we'd made
+   couldn't tell those two apart. Replaced with a real distinguishing check (a request with a
+   spoofed `X-Forwarded-For` header should return the real visitor's city, not the spoofed
+   address's) — see the README's deployment-architecture section, and `config/env.ts`'s
+   `TRUST_PROXY_HOPS` comment, both corrected to state this honestly instead of overclaiming.
+
+**A real Zod v4 typing quirk, found while implementing the coordinate fix, not assumed away:**
+`z.string().pipe(z.coerce.number()...)` fails to typecheck — `z.coerce.number()`'s declared input
+type (`unknown`) doesn't satisfy what `.pipe()` expects from the previous schema's string output,
+even though the runtime behavior would be correct. Worked around with `.transform(Number)` before
+`.pipe(z.number()...)` instead, which typechecks cleanly and, since the regex already guarantees
+a plain decimal string by that point, is exactly as safe as the coerce version would have been.
+
+**A real mistake in my own earlier fix, caught immediately by re-running the suite:** inserting
+the new `isTimeoutAbort` helper between `fetchJson`'s two overload signatures and its
+implementation broke TypeScript's overload grouping (`Function implementation name must be
+'fetchJson'`) — overload declarations and their implementation have to stay contiguous. Moved the
+helper above the overloads instead.
+
+**Every fix here was verified with a failing test first**, the same discipline used throughout
+this project: the new stalled-body test, coordinate-validation tests, malformed-JSON/oversized-
+body tests, and the DST regression test were each confirmed to fail against the pre-fix code
+(via `git stash` on just the relevant file) before being confirmed to pass against the fix,
+rather than trusting a green run alone to mean the test was actually exercising anything. The
+DST test in particular didn't need any environment manipulation to prove this, since this
+sandbox's own default timezone already happens to be `America/Edmonton` — the exact zone the bug
+was reported in.
+
+**The IP provider switch (ipapi.co → ipwho.is)** touched only `clients/ip-geolocation/` (client,
+raw types, mapper, and their tests) and one env default, by design — the vendor-isolation
+architecture (see the README's Architecture overview) meant `location.service.ts` and its own
+tests needed zero changes. Verified against the real live API before trusting it, the same
+standard as every other upstream integration in this project: a real successful lookup (8.8.8.8
+→ San Jose) and a real reserved-range rejection (10.0.0.1 → `{success: false, ...}`) through the
+actual client code, not just the mapper in isolation.
+
+**What I chose not to implement, and why:** the static city list and the same-name/same-country
+matching limitation (both flagged by Codex) are documented rather than "fixed" — see the
+README's [Trade-offs](./README.md#trade-offs) and [Known limitations](./README.md#known-limitations)
+sections. The alternatives considered for each would have added real infrastructure — a
+geocoding dependency, an arbitrary distance threshold — to satisfy a stricter reading of one
+requirement without solving a problem this app actually has.
+
+## 2026-09-28 - Forecast-date picker: stop re-fetching the whole report on a date pick
+
+**Tool:** Claude Code. Fabio's request, from reviewing the code and actually using the deployed
+app, not from an AI-initiated finding: picking a forecast date visibly reloaded the
+current-conditions and week-strip cards too, not just the selected-day card he'd just asked for,
+and he asked whether that reload was actually necessary.
+
+**Root cause, confirmed before touching anything:** `weather.service.ts`'s `getWeatherReport`
+always called `openMeteoClient.getForecast(latitude, longitude)` fresh regardless of `date` -
+the Open-Meteo request itself never depended on it - then did nothing more than
+`report.week.find((day) => day.date === date)` to pick `selectedDay` out of the _same_ 7-day
+`week` array the response already carried. The frontend's `useCityData` folded `date` into its
+request key anyway, so every date pick re-ran the whole fetch-and-render cycle for data that
+hadn't changed. Confirmed by inspection of both files (not assumed): nothing in the Open-Meteo
+client's request-building code (`clients/open-meteo/client.ts`) reads `date` at all.
+
+**The fix:** `selectedDay` was always derivable client-side from data the frontend already had
+as soon as the first (dateless) request resolved, so it now is - `weather.week.find((day) =>
+day.date === selectedDate)` in `TravelPlannerPage`, bounded by `weather.allowedForecastDates` so
+`week`'s 7th day (today+6 - reachable data that was never a selectable date, a deliberate
+narrower-picker-range rule from Stage 7) can't be matched even though it's technically present
+in the array. This let a real amount of code come out rather than just move: the `date` query
+param and its Zod schema (`controllers/travel.controller.ts`), `ForecastDateOutOfRangeError`
+(`errors/app-error.ts`), and the validation branch in `weather.service.ts` (now a
+`description.service.ts`-style thin pass-through) are all gone, along with `selectedDay` from the
+`WeatherReport` type on both sides. The one thing that had to move rather than disappear: nothing
+stops a user from typing a date straight into the native `<input type="date">` that falls outside
+`allowedForecastDates` (most browsers only grey out/refuse that in their own picker UI, not a
+hand-typed value) - previously the server's `ForecastDateOutOfRangeError` caught this and
+`TravelPlannerPage` cleared the date in response; now `TravelPlannerPage` checks the same range
+itself and clears the date the moment it notices, no request involved.
+
+**Verified for real, not just by the test suite passing:**
+
+- Ran the actual E2E suite (`npm run e2e`) against the real backend, a real Chromium browser, and
+  the existing Open-Meteo/Wikipedia stubs - the happy-path spec still picks a forecast date and
+  asserts the selected-day card shows that day's real (stubbed-upstream, real-mapper) data, now
+  purely as a client-side match rather than a second round trip. Passed on the first run after
+  the change, and the spec's own comment was corrected so it no longer claims a "request/response
+  round trip" that no longer happens.
+- Added a request-counter assertion to `TravelPlannerPage.test.tsx`'s date-picking test
+  (`weatherRequestCount`) proving a date pick makes zero additional `/api/weather` calls - this is
+  the actual regression test for the bug Fabio reported, not just a happy-path check that the
+  right data renders.
+- Added a new test for the hand-typed-out-of-range case (typing a date one day past
+  `allowedForecastDates.max`) asserting the picker clears back to empty, no alert appears, and -
+  again via the request counter - no network request was made just to find that out.
+- Ran the full suite after the change: 168/168 API tests, 84/84 web tests (net -4 from before -
+  three tests covering the now-deleted server-side date-range-error path were removed rather than
+  adapted, since that path no longer exists, and two near-duplicate `errorCode` tests in
+  `useCityData.test.ts` were consolidated into the tests they duplicated), `npm run typecheck`
+  clean, `npm run lint` clean. Coverage stayed above both workspaces' enforced floors: API
+  98.38%/92.48%/100%/98.75% (was 98.11%/92.46%/100%/98.43%), web 97.4%/92.99%/96.2%/98.57% (was
+  97.4%/92.94%/96.15%/98.57%) - both moved slightly up, not down, despite removing code, since the
+  removed lines were exactly the ones the deleted tests existed to cover.
+
+**What I didn't change:** the today-to-today+5 picker range being one day narrower than the
+7-day `week` (Stage 7's deliberate rule, restated in the README's
+[Timezone / date handling](./README.md#timezone-date-handling) section) is preserved exactly,
+just enforced in one fewer place. `allowedForecastDates` itself still comes from Open-Meteo via
+the mapper, untouched by this change.

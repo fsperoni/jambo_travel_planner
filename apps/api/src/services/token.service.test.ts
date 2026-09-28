@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
 import jwt from "jsonwebtoken";
 import { createTokenService } from "./token.service.js";
-
-const SECRET = "a-test-secret-that-is-at-least-32-characters";
+import { TEST_JWT_SECRET as SECRET } from "../../test/helpers/fixtures.js";
 
 describe("token service", () => {
   it("signs a token that verifies back to the same payload", () => {

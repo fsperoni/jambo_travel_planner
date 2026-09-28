@@ -40,5 +40,32 @@ function toAppError(err: unknown): AppError {
   if (err instanceof ZodError) {
     return new ValidationError("Invalid request", err.issues);
   }
+  // express.json() (app.ts) throws its own errors for a malformed body or
+  // one over the configured size limit — both real client mistakes, not
+  // server bugs, that were previously falling all the way through to the
+  // generic 500 below (confirmed against a real request with each: a
+  // literal "{not json" body, and one over the 10kb limit). Matched by the
+  // error's own `.type` string (a stable identifier from body-parser/
+  // raw-body, confirmed directly against the installed Express version,
+  // not from documentation alone) rather than trusting its `.status` —
+  // this function decides the status itself, from a fixed, known set of
+  // types, so an arbitrary object with a spoofed `.status` couldn't
+  // influence the response either way. No dedicated AppError subclass:
+  // unlike ValidationError or UnauthorizedError, nothing in this codebase
+  // ever constructs one of these — they only ever originate from
+  // express.json() itself, so there's nothing to import the class for.
+  const bodyParserErrorType = getBodyParserErrorType(err);
+  if (bodyParserErrorType === "entity.parse.failed") {
+    return new AppError(400, "INVALID_JSON", "Request body is not valid JSON");
+  }
+  if (bodyParserErrorType === "entity.too.large") {
+    return new AppError(413, "PAYLOAD_TOO_LARGE", "Request body is too large");
+  }
   return new AppError(500, "INTERNAL_ERROR", "Something went wrong");
+}
+
+function getBodyParserErrorType(err: unknown): string | undefined {
+  if (typeof err !== "object" || err === null || !("type" in err)) return undefined;
+  const { type } = err as { type: unknown };
+  return typeof type === "string" ? type : undefined;
 }

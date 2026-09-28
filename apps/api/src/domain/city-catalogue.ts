@@ -8,7 +8,7 @@ export interface City {
   latitude: number;
   longitude: number;
   /** The exact Wikipedia article title for this city, used by the
-   *  description feature (Stage 5) — curated by hand so e.g. "New York
+   *  description feature — curated by hand so e.g. "New York
    *  City" resolves correctly rather than guessing from `name` alone. */
   wikipediaTitle: string;
 }
@@ -135,7 +135,7 @@ export function findCityById(id: string): City | undefined {
 
 /**
  * Matches an IP-geolocation provider's free-text city name against the
- * catalogue — used by Stage 6's location detection, where the provider's
+ * catalogue — used by location detection, where the provider's
  * spelling/diacritics/casing aren't guaranteed to match ours exactly (e.g.
  * "Sao Paulo" should still match "São Paulo"). Country code is compared
  * exactly (not diacritic-normalized — ISO 3166-1 alpha-2 codes are plain

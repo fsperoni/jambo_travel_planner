@@ -1,5 +1,5 @@
 import { truncateAtWordBoundary } from "../../domain/truncate-text.js";
-import type { CityDescription } from "../../services/description.service.js";
+import type { CityDescription } from "../../types/city-description.js";
 import type { WikipediaSummaryResponse } from "./raw-types.js";
 
 // A Wikipedia extract's length varies wildly by city — a couple of

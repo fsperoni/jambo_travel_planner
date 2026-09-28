@@ -1,19 +1,12 @@
-export interface CityDescription {
-  title: string;
-  /** `null` when Wikipedia has no article for this title, or when the
-   *  title resolves to a disambiguation page rather than a real article —
-   *  both are normal, expected outcomes, not failures (see D3 in the
-   *  project plan / README's Trade-offs section). */
-  description: string | null;
-  sourceUrl: string | null;
-}
+import type { CityDescription } from "../types/city-description.js";
+import type { WikipediaClient } from "../clients/wikipedia/client.js";
 
 export interface DescriptionService {
   getCityDescription(title: string): Promise<CityDescription>;
 }
 
 export interface DescriptionServiceDependencies {
-  wikipediaClient: { getSummary(title: string): Promise<CityDescription> };
+  wikipediaClient: WikipediaClient;
 }
 
 /**

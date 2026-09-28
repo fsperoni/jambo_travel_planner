@@ -1,11 +1,6 @@
-import { fetchJson } from "../http.js";
-import { mapIpApiResponse, type IpLocation } from "./mapper.js";
-import type { IpApiResponse } from "./raw-types.js";
-
-// ipapi.co is generally fast; matches the timeout budget used for the
-// other two upstreams rather than inventing a different number without a
-// reason to.
-const REQUEST_TIMEOUT_MS = 5000;
+import { fetchJson, UPSTREAM_TIMEOUT_MS } from "../http.js";
+import { mapIpWhoIsResponse, type IpLocation } from "./mapper.js";
+import type { IpWhoIsResponse } from "./raw-types.js";
 
 export interface IpGeolocationClient {
   lookup(ip: string): Promise<IpLocation | null>;
@@ -19,18 +14,21 @@ export interface IpGeolocationClient {
 export function createIpGeolocationClient(baseUrl: string): IpGeolocationClient {
   return {
     async lookup(ip) {
-      const url = new URL(`/${encodeURIComponent(ip)}/json/`, baseUrl);
+      const url = new URL(`/${encodeURIComponent(ip)}`, baseUrl);
 
-      // No notFoundReturnsNull here: ipapi.co has no 404 case for this
-      // endpoint. A genuine outage/rate-limit still throws UpstreamError
-      // (a 429, in practice — confirmed live) and is handled by
-      // location.service.ts exactly like a mapped null: both fall back to
-      // the default city, just with the same "lookup-failed" reason.
-      const raw = await fetchJson<IpApiResponse>(url.toString(), {
-        timeoutMs: REQUEST_TIMEOUT_MS,
+      // No notFoundReturnsNull here: this app only ever calls lookup()
+      // with a real IP address (from req.ip), and ipwho.is's known
+      // "couldn't do this" case for that input (a reserved/private range)
+      // comes back as a 200 with {success: false} — read by the mapper,
+      // not the HTTP status. A genuine outage/rate-limit still throws
+      // UpstreamError and is handled by location.service.ts exactly like
+      // a mapped null: both fall back to the default city, just with the
+      // same "lookup-failed" reason.
+      const raw = await fetchJson<IpWhoIsResponse>(url.toString(), {
+        timeoutMs: UPSTREAM_TIMEOUT_MS,
       });
 
-      return mapIpApiResponse(raw);
+      return mapIpWhoIsResponse(raw);
     },
   };
 }

@@ -1,12 +1,7 @@
-import { fetchJson } from "../http.js";
-import type { CityDescription } from "../../services/description.service.js";
+import { fetchJson, UPSTREAM_TIMEOUT_MS } from "../http.js";
+import type { CityDescription } from "../../types/city-description.js";
 import { mapSummaryResponse } from "./mapper.js";
 import type { WikipediaSummaryResponse } from "./raw-types.js";
-
-// Wikipedia's summary API is generally fast; matches the timeout budget
-// used for Open-Meteo rather than inventing a different number without a
-// reason to.
-const REQUEST_TIMEOUT_MS = 5000;
 
 export interface WikipediaClient {
   getSummary(title: string): Promise<CityDescription>;
@@ -30,7 +25,7 @@ export function createWikipediaClient(baseUrl: string, userAgent: string): Wikip
       // real 403, confirmed directly against the live API) — this is a
       // required header here, not a courtesy.
       const raw = await fetchJson<WikipediaSummaryResponse>(url.toString(), {
-        timeoutMs: REQUEST_TIMEOUT_MS,
+        timeoutMs: UPSTREAM_TIMEOUT_MS,
         headers: { "User-Agent": userAgent, Accept: "application/json" },
         notFoundReturnsNull: true,
       });

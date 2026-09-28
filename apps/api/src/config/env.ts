@@ -3,10 +3,10 @@ import { findCityById } from "../domain/city-catalogue.js";
 
 // Fail fast: if required configuration is missing or malformed, the process
 // should refuse to start rather than fail confusingly on whichever request
-// happens to need the missing value first. Built up incrementally — each
-// stage adds only the variables it actually consumes (e.g. JWT_SECRET
-// arrives with Stage 2's auth, DATABASE_URL with Stage 2's persistence)
-// rather than pre-declaring config for features that don't exist yet.
+// happens to need the missing value first. Each variable here is one the
+// app actually reads somewhere (see the README's environment-variables
+// table for what each one does), not speculative config for a feature that
+// doesn't exist.
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().int().positive().default(3000),
@@ -60,7 +60,7 @@ const envSchema = z.object({
 
   // Overridable for the same reason as the other two base URLs — see
   // clients/ip-geolocation/.
-  IP_GEOLOCATION_BASE_URL: z.url().default("https://ipapi.co"),
+  IP_GEOLOCATION_BASE_URL: z.url().default("https://ipwho.is"),
 
   // The city shown (and the source of its weather/description) when IP
   // geolocation can't run at all (local dev) or doesn't produce a usable
@@ -75,10 +75,17 @@ const envSchema = z.object({
   // local dev with no reverse proxy in front) means req.ip always reflects
   // the actual TCP connection. In production behind exactly one reverse
   // proxy (Render's own load balancer), this must be `1` — confirmed
-  // empirically, not assumed: with hops=1, Express trusts the proxy's own
-  // observed address and returns the *last* entry of X-Forwarded-For,
-  // correctly ignoring anything a client prepends to that header. Verified
-  // for the real deployment in Stage 3.5/11, not just locally.
+  // empirically against a local test server with hops=1, not assumed:
+  // Express trusts the proxy's own observed address and returns the
+  // *last* entry of X-Forwarded-For, correctly ignoring anything a client
+  // prepends to that header (see test/travel.test.ts's spoofed-header
+  // test for the same thing pinned down as a regression). This local
+  // verification alone can't tell a correct hop count apart from one
+  // that's too low but happens to still land on the same fallback reason
+  // — a plain response from the real deployment can't either; only a
+  // spoofed-header request against the real deployment can (see the
+  // README's deployment architecture section for exactly what that check
+  // looks like and why).
   TRUST_PROXY_HOPS: z.coerce.number().int().min(0).default(0),
 });
 

@@ -8,16 +8,12 @@ export function getCities(): Promise<City[]> {
 export function getWeather(
   latitude: number,
   longitude: number,
-  date?: string,
   signal?: AbortSignal,
 ): Promise<WeatherReport> {
   const params = new URLSearchParams({
     latitude: String(latitude),
     longitude: String(longitude),
   });
-  if (date) {
-    params.set("date", date);
-  }
   return apiFetch<WeatherReport>(`/api/weather?${params.toString()}`, { signal });
 }
 
