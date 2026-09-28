@@ -6,8 +6,15 @@
  */
 :root {
   /* Colors */
+  /* --color-primary is a *button background* — its own contrast (white
+     text on it) already passes AA in both themes at this exact value, so
+     it's deliberately never overridden below. --color-primary-text is a
+     different role: primary-colored text/icons/outlines sitting directly
+     on --color-surface, which does need a lighter value in dark mode —
+     see the dark-mode block for why these two can't share one variable. */
   --color-primary: #2563eb;
   --color-primary-hover: #1d4ed8;
+  --color-primary-text: #2563eb;
   --color-bg: #f8fafc;
   --color-surface: #ffffff;
   --color-text: #0f172a;
@@ -41,5 +48,14 @@
     --color-border: #334155;
     --color-error-bg: #3f1414;
     --color-notice-bg: #3f2d0a;
+    /* The light-mode --color-primary-text (#2563eb) and --color-notice
+       (#b45309) both fail WCAG AA against their dark-mode surfaces —
+       2.83:1 and 2.63:1, measured, not eyeballed (both need 4.5:1 for
+       text). Lightened here so links, icons, focus outlines, and the
+       session-expired/slow-request notice stay actually readable in dark
+       mode, without touching the button-background --color-primary that
+       already passes in both themes. */
+    --color-primary-text: #60a5fa;
+    --color-notice: #fbbf24;
   }
 }

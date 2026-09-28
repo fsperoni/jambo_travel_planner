@@ -13,6 +13,12 @@
 }
 
 .title {
+  /* Now a real <h1> (for document-outline/screen-reader navigation — the
+     authenticated view had no heading at all before this), so the
+     browser's default h1 margin/font-size need an explicit reset to keep
+     the same visual size this element always had as a plain span. */
+  margin: 0;
+  font-size: 1rem;
   font-weight: 700;
   /* The title should reflow to a new row as a whole (see flex-wrap above),
      not wrap word-by-word within itself. */

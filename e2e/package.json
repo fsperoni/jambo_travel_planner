@@ -1,0 +1,21 @@
+{
+  "name": "@jambo/e2e",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Playwright end-to-end tests for the Jambo travel planner, run against real backend/frontend dev servers and a real test database, with the external upstreams (Open-Meteo, Wikipedia) replaced by local stub servers — see the README's testing strategy for why.",
+  "scripts": {
+    "e2e": "playwright test",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@types/bcrypt": "^6.0.0",
+    "@types/node": "^24.13.6",
+    "@types/pg": "^8.23.1",
+    "bcrypt": "^6.0.0",
+    "pg": "^8.23.0"
+  }
+}
