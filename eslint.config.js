@@ -43,6 +43,12 @@ export default tseslint.config(
     languageOptions: { globals: globals.node },
   },
 
+  // e2e/ (Playwright + its stub servers/global setup) also runs under Node.
+  {
+    files: ["e2e/**/*.ts"],
+    languageOptions: { globals: globals.node },
+  },
+
   // apps/web runs in the browser; add React Hooks correctness rules and the
   // Vite "only export components from a component file" fast-refresh rule.
   // We pick specific rules rather than the plugin's full "recommended-latest"

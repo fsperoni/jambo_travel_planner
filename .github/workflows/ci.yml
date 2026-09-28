@@ -48,3 +48,15 @@ jobs:
         run: npm run db:migrate:test -w @jambo/api
 
       - run: npm run test:coverage
+
+      # Only Chromium — see e2e/playwright.config.ts for why one browser is
+      # enough for a single happy-path suite. --with-deps installs the
+      # system libraries Chromium needs on the bare ubuntu-latest runner.
+      - name: Install Playwright's Chromium browser
+        run: npx playwright install --with-deps chromium
+
+      # GitHub Actions already sets CI=true on every runner, which
+      # playwright.config.ts uses to enable retries and skip
+      # reuseExistingServer — no extra env needed here.
+      - name: Run E2E tests
+        run: npm run e2e

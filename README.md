@@ -294,7 +294,17 @@ jambo-travel-planner/            (repo root)
         styles/                  # tokens.css (design tokens), global.css
         test/                    # MSW request-mock handlers + a render-with-providers helper
   e2e/                           # Playwright end-to-end tests (Stage 9)
-  .github/workflows/ci.yml       # lint, typecheck, migrate, test on every push
+    fixtures.ts                  # shared test data — a value is defined once here and
+                                  #   referenced by the stub servers, global-setup, and the
+                                  #   spec's assertions, rather than duplicated across them
+    stub-servers.ts              # fake Open-Meteo/Wikipedia HTTP servers — real upstreams
+                                  #   are never hit in this suite (see Testing strategy)
+    global-setup.ts              # migrates + seeds the test database once, starts the
+                                  #   stub servers, returns their teardown
+    playwright.config.ts         # starts the real backend + frontend dev servers, pointed
+                                  #   at the stubs and the test database
+    tests/happy-path.spec.ts     # login → default city → switch city → pick a forecast date
+  .github/workflows/ci.yml       # lint, typecheck, migrate, test, e2e on every push
   package.json                   # npm workspaces root
 ```
 
@@ -677,14 +687,26 @@ every write path to remember to normalize it.
 ```bash
 npm test              # unit + integration tests, both workspaces
 npm run test:coverage # same, with a coverage report
+npm run e2e            # Playwright — separate from npm test, see below
 ```
 
 Backend integration tests require `TEST_DATABASE_URL`, pointed at a database with migrations
 already applied (`npm run db:migrate:test -w @jambo/api`) — see
 [Local setup](#local-setup). Without it, the integration test suite fails immediately with a
 message saying so, rather than a confusing connection error. CI provisions a PostgreSQL
-service container and runs the migration automatically before tests. The Playwright end-to-end
-test (`npm run e2e`, Stage 9) is separate from `npm test`.
+service container and runs the migration automatically before tests.
+
+**`npm run e2e`** (Stage 9) is deliberately separate from `npm test` — it spins up real backend
+and frontend dev servers plus two stub upstream servers (see
+[Testing strategy](#testing-strategy)), which takes a few seconds even when everything's
+already warm, unlike the near-instant unit/integration suite. It needs the same
+`TEST_DATABASE_URL` as the integration tests (reused, not a separate database — see
+`e2e/global-setup.ts`) and, once per machine,
+[Playwright's browser binary](https://playwright.dev/docs/browsers):
+
+```bash
+npx playwright install --with-deps chromium
+```
 
 ## Testing strategy
 
@@ -835,6 +857,37 @@ wrong reason); and picking a date, then switching to a city where that date is g
 range, silently drops the date and shows neither an error banner nor a stale selected-day card —
 the exact "keep the date only if it's still valid" behavior, reproduced as a real race between a
 user action and a server rejection rather than only argued for in prose.
+
+**End-to-end (Stage 9), `e2e/`, is a different kind of test from everything above** — real
+backend and frontend dev servers, a real (test) database, and a real Chromium browser driven by
+[Playwright](https://playwright.dev), rather than fakes/mocks/jsdom. The one thing that's
+_not_ real is the external upstreams: `e2e/stub-servers.ts` runs plain `node:http` servers
+standing in for Open-Meteo and Wikipedia, so the suite never depends on (or is ever flaky
+because of) a live third party — the exact problem the project plan's R11 risk flagged before
+this stage was built. `IP_GEOLOCATION_BASE_URL` points at a deliberately unreachable
+`.invalid` host with _no_ stub behind it at all: Playwright's browser connects to the backend
+over loopback with `TRUST_PROXY_HOPS=0`, so `location.service.ts`'s `isLoopback()` check
+short-circuits before that URL would ever be requested — if that assumption were ever broken by
+a future change, this would fail loudly (a connection error) instead of silently reaching a
+real API.
+
+`e2e/fixtures.ts` centralizes every value the stub servers return and the spec asserts on, so
+(for example) Calgary's fixture temperature is defined exactly once and referenced by both
+sides — a mismatch between "what the stub sends" and "what the test expects" isn't possible by
+construction. `e2e/global-setup.ts` runs the backend's own migration script against
+`TEST_DATABASE_URL` (reused from the integration suite, not a separate database — see
+[Running tests](#running-tests)) and seeds one fixed demo account, truncating `users` first so a
+stale row from an earlier run can never make the login step flaky.
+
+The one spec (`tests/happy-path.spec.ts`) walks the full path a reviewer would actually take:
+log in → the default city (Calgary, via the real loopback/local-development detection path)
+loads with real description/current/week data → switch to a second city (Tokyo) and confirm the
+_displayed_ data actually changes, not just the dropdown's value → pick a forecast date and
+confirm the selected-day card shows that specific day's distinct fixture temperature, proving
+the date picker drives a real request/response round trip end to end. This was verified to
+actually catch a regression, not just pass vacuously: deliberately corrupting a fixture value
+made the test fail with a clear, real diff between expected and rendered text, then passed
+clean again once reverted.
 
 ## Deployment architecture
 

@@ -702,3 +702,55 @@ test bug, recognized and avoided directly this time rather than rediscovered fro
 
 **Corrections requested by Fabio:** none this stage beyond the shared suggestion noted above,
 which matched the existing plan rather than changing it.
+
+## 2026-09-28 - Stage 9: Playwright end-to-end
+
+**Tool:** Claude Code.
+
+Built the `e2e/` workspace: two stub upstream servers, a global-setup script that migrates and
+seeds a real test database, a Playwright config that starts the real backend and frontend dev
+servers around all of it, and one happy-path spec.
+
+**A real architectural insight, not just following the plan literally: the third stub server
+turned out to be unnecessary, and I said so rather than building it anyway.** The plan calls for
+stubbing "the upstreams" generically. Working through the actual request path before writing
+code: Playwright's browser talks to the E2E backend over loopback, and with
+`TRUST_PROXY_HOPS=0` (the correct local/CI value - no reverse proxy in this topology),
+`location.service.ts`'s `isLoopback()` check returns true and short-circuits _before_ the
+ipapi.co client is ever constructed or called. A geolocation stub server would sit there,
+correctly built, and never receive a single request. Rather than build it anyway "to be safe" or
+silently skip it without explanation, I pointed `IP_GEOLOCATION_BASE_URL` at a deliberately
+unreachable `.invalid` host with nothing behind it - both fewer moving parts to maintain and,
+if that loopback assumption ever quietly broke in a future stage, a loud connection-error
+failure instead of a silent real-network call sneaking into an "E2E never hits live APIs" suite.
+
+**A real, if minor, TypeScript mistake caught by the typecheck step, not by code review:** the
+first draft of `e2e/fixtures.ts` defined `CALGARY`/`TOKYO` as plain object literals (`{id:
+"calgary", ...}`), which TypeScript widens `id` to `string`. Using `.id` as a computed property
+key when building `WEATHER_FIXTURES`/`DESCRIPTION_FIXTURES` then produced an object whose type
+lost the specific `"calgary" | "tokyo"` keys, so every lookup came back typed as possibly
+`undefined` under this project's `noUncheckedIndexedAccess` setting - correctly, since from the
+type system's point of view a plain `string` key could be anything. Fixed with `as const` on
+both city objects, which was also the more accurate type in the first place: these are fixed
+fixture identities, not arbitrary strings that happen to hold "calgary" today.
+
+**The test was verified to actually test something, using the same discipline this project has
+applied to every stage's most important test:** rather than trust a green run at face value,
+I deliberately corrupted a fixture value (`conditionLabel`) after the suite passed, confirmed
+the run then failed with a real, readable diff between what the page showed and what the test
+now (incorrectly) expected, and only then reverted it and confirmed a clean pass again. This is
+the same "prove the bug it catches is real" standard already used for `useCityData`'s
+stale-response test in Stage 4 and the trust-proxy behavior in Stage 6, applied here to an E2E
+suite where a false-positive "it passed" is especially easy to get wrong quietly (a bad
+selector, an assertion that matches too loosely, a race that happens not to manifest once).
+
+**Reusing `TEST_DATABASE_URL` for E2E, rather than provisioning a dedicated database, was a
+deliberate simplicity call, not an oversight.** CI (and a local run) executes `npm test` and
+`npm run e2e` as separate, sequential steps - never concurrently against the same database - so
+there's no real contention this would need to guard against, and a second database would be
+infrastructure justified by a race condition that can't actually happen in how this project runs
+its test suites. `global-setup.ts` truncates `users` before seeding specifically so leftover
+state from whichever suite ran last never makes the E2E login step flaky, which is the actual
+risk reusing the database introduces.
+
+**Corrections requested by Fabio:** none this stage.
