@@ -55,9 +55,12 @@ test("login, default city loads, switch city, pick a forecast date", async ({ pa
   await expect(page.getByText(DESCRIPTION_FIXTURES[CALGARY.id])).not.toBeVisible();
 
   // Pick a forecast date up to 5 days out and confirm the selected-day
-  // card shows that specific day's real (fixture) data — proving the
-  // date picker drives a real request/response round trip, not just a
-  // client-side lookup into data already on screen.
+  // card shows that specific day's real (fixture) data. This is a
+  // client-side lookup into the week already on screen, not a second
+  // request (see TravelPlannerPage/useCityData's comments for why) — the
+  // assertion still exercises the real backend/mapper end to end, since
+  // that data only reached the browser via the initial weather fetch
+  // going through the real Open-Meteo client and mapper.
   await page.getByLabel("See forecast for a specific day").fill(SELECTED_DATE);
 
   const selectedDayCard = page.getByLabel(/^Forecast for /);

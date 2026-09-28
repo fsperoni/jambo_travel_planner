@@ -1037,3 +1037,65 @@ README's [Trade-offs](./README.md#trade-offs) and [Known limitations](./README.m
 sections. The alternatives considered for each would have added real infrastructure — a
 geocoding dependency, an arbitrary distance threshold — to satisfy a stricter reading of one
 requirement without solving a problem this app actually has.
+
+## 2026-09-28 - Forecast-date picker: stop re-fetching the whole report on a date pick
+
+**Tool:** Claude Code. Fabio's request, from reviewing the code and actually using the deployed
+app, not from an AI-initiated finding: picking a forecast date visibly reloaded the
+current-conditions and week-strip cards too, not just the selected-day card he'd just asked for,
+and he asked whether that reload was actually necessary.
+
+**Root cause, confirmed before touching anything:** `weather.service.ts`'s `getWeatherReport`
+always called `openMeteoClient.getForecast(latitude, longitude)` fresh regardless of `date` -
+the Open-Meteo request itself never depended on it - then did nothing more than
+`report.week.find((day) => day.date === date)` to pick `selectedDay` out of the _same_ 7-day
+`week` array the response already carried. The frontend's `useCityData` folded `date` into its
+request key anyway, so every date pick re-ran the whole fetch-and-render cycle for data that
+hadn't changed. Confirmed by inspection of both files (not assumed): nothing in the Open-Meteo
+client's request-building code (`clients/open-meteo/client.ts`) reads `date` at all.
+
+**The fix:** `selectedDay` was always derivable client-side from data the frontend already had
+as soon as the first (dateless) request resolved, so it now is - `weather.week.find((day) =>
+day.date === selectedDate)` in `TravelPlannerPage`, bounded by `weather.allowedForecastDates` so
+`week`'s 7th day (today+6 - reachable data that was never a selectable date, a deliberate
+narrower-picker-range rule from Stage 7) can't be matched even though it's technically present
+in the array. This let a real amount of code come out rather than just move: the `date` query
+param and its Zod schema (`controllers/travel.controller.ts`), `ForecastDateOutOfRangeError`
+(`errors/app-error.ts`), and the validation branch in `weather.service.ts` (now a
+`description.service.ts`-style thin pass-through) are all gone, along with `selectedDay` from the
+`WeatherReport` type on both sides. The one thing that had to move rather than disappear: nothing
+stops a user from typing a date straight into the native `<input type="date">` that falls outside
+`allowedForecastDates` (most browsers only grey out/refuse that in their own picker UI, not a
+hand-typed value) - previously the server's `ForecastDateOutOfRangeError` caught this and
+`TravelPlannerPage` cleared the date in response; now `TravelPlannerPage` checks the same range
+itself and clears the date the moment it notices, no request involved.
+
+**Verified for real, not just by the test suite passing:**
+
+- Ran the actual E2E suite (`npm run e2e`) against the real backend, a real Chromium browser, and
+  the existing Open-Meteo/Wikipedia stubs - the happy-path spec still picks a forecast date and
+  asserts the selected-day card shows that day's real (stubbed-upstream, real-mapper) data, now
+  purely as a client-side match rather than a second round trip. Passed on the first run after
+  the change, and the spec's own comment was corrected so it no longer claims a "request/response
+  round trip" that no longer happens.
+- Added a request-counter assertion to `TravelPlannerPage.test.tsx`'s date-picking test
+  (`weatherRequestCount`) proving a date pick makes zero additional `/api/weather` calls - this is
+  the actual regression test for the bug Fabio reported, not just a happy-path check that the
+  right data renders.
+- Added a new test for the hand-typed-out-of-range case (typing a date one day past
+  `allowedForecastDates.max`) asserting the picker clears back to empty, no alert appears, and -
+  again via the request counter - no network request was made just to find that out.
+- Ran the full suite after the change: 168/168 API tests, 84/84 web tests (net -4 from before -
+  three tests covering the now-deleted server-side date-range-error path were removed rather than
+  adapted, since that path no longer exists, and two near-duplicate `errorCode` tests in
+  `useCityData.test.ts` were consolidated into the tests they duplicated), `npm run typecheck`
+  clean, `npm run lint` clean. Coverage stayed above both workspaces' enforced floors: API
+  98.38%/92.48%/100%/98.75% (was 98.11%/92.46%/100%/98.43%), web 97.4%/92.99%/96.2%/98.57% (was
+  97.4%/92.94%/96.15%/98.57%) - both moved slightly up, not down, despite removing code, since the
+  removed lines were exactly the ones the deleted tests existed to cover.
+
+**What I didn't change:** the today-to-today+5 picker range being one day narrower than the
+7-day `week` (Stage 7's deliberate rule, restated in the README's
+[Timezone / date handling](./README.md#timezone-date-handling) section) is preserved exactly,
+just enforced in one fewer place. `allowedForecastDates` itself still comes from Open-Meteo via
+the mapper, untouched by this change.

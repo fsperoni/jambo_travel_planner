@@ -583,42 +583,41 @@ displaying the given wall-clock time unchanged regardless of the browser's own z
 directly, not assumed: formatting the same string under three different `TZ` settings
 (UTC, Pacific/Honolulu, Asia/Tokyo) produced the same "7:38 AM" every time.
 
-**The forecast-date picker.** `GET /api/weather` takes an optional `?date=` query
-param — Zod validates it's a real calendar date (a regex alone would accept "2026-02-30";
-`controllers/travel.controller.ts`'s schema actually constructs the date and checks it
-round-trips) — and `weather.service.ts` checks it against that city's own
-`allowedForecastDates` before attaching the matching day as `selectedDay`, throwing a
-`ForecastDateOutOfRangeError` (400, with the valid range in `details`) otherwise. The frontend's
-`<ForecastDatePicker>` binds a native `<input type="date" min max>` to that same range — most
-browsers grey out or refuse out-of-range dates directly in their own date-picker UI, a real,
-zero-JavaScript layer on top of the backend's validation, never a replacement for it, since a
-client can always send a `date` directly to the API regardless of what the input allows.
+**The forecast-date picker is a client-side lookup, not a second request.** `GET /api/weather`
+takes only `latitude`/`longitude` — no `date` query param. Picking a day never changes which
+report the backend fetches from Open-Meteo (`week` always covers the same 7 days regardless of
+what date, if any, the frontend asked about), so `TravelPlannerPage` matches the selected date
+against the `week` array already sitting in state: `weather.week.find((day) => day.date ===
+selectedDate)`, bounded by `weather.allowedForecastDates` so `week`'s 7th day (today+6, reachable
+data that isn't a selectable date — see below) can't be matched even though it's technically
+present. This used to be a `?date=` query param that `weather.service.ts` validated server-side
+and attached as `selectedDay`; changed at Fabio's request after reviewing and using the deployed
+app, where picking a date visibly reloaded the current-conditions and week-strip cards too, not
+just the selected-day card, because the whole report was being re-fetched for data the frontend
+already had. See this date's `AI_USAGE.md` entry for the full before/after. The frontend's
+`<ForecastDatePicker>` still binds a native `<input type="date" min max>` to
+`allowedForecastDates` — most browsers grey out or refuse an out-of-range date directly in their
+own date-picker UI, but typing digits in bypasses that in most browsers, so `TravelPlannerPage`
+also clears a hand-typed out-of-range date back to "no date chosen" once it detects one, the one
+remaining way to end up with an invalid `selectedDate` now that there's no server round trip to
+catch it.
 
 **Switching cities always clears the selected date** (`TravelPlannerPage`'s `handleCityChange`) —
 deliberately, even for a date that happens to still be in range for the new city. A forecast
 date is a choice about a specific city's calendar; carrying it silently across a city switch
 would be more surprising than resetting to "current + week only" and asking the user to pick
-again. This also means a city switch never sends the old date in its very first request for the
-new city, so there's no wasted round trip to a range the new city might reject anyway.
-
-**A date can still become invalid without any city change** — its allowed range is relative to
-that city's own local "today", which moves forward on its own as real time passes, independent
-of anything the user does. Rather than have the frontend track a clock to predict this,
-`TravelPlannerPage` lets the request go through and recovers from the one error code that means
-specifically that (`FORECAST_DATE_OUT_OF_RANGE`): it silently clears the date and lets
-`useCityData` refetch without it — enforced by the one place that actually knows the current
-range (the server), not guessed at by the client.
+again.
 
 ## API overview
 
-| Method & path                                                     | Auth               | Purpose                                                                                                                                                                                                                             |
-| ----------------------------------------------------------------- | ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /health`                                                     | none               | `{ "status": "ok" }` — used by the hosting platform's health check                                                                                                                                                                  |
-| `POST /api/auth/login`                                            | none, rate-limited | `{email,password}` → `200 {accessToken, expiresIn, user}`; 400 bad body; 401 invalid credentials                                                                                                                                    |
-| `GET /api/cities`                                                 | Bearer             | `200 City[]`, sorted alphabetically by name — the static catalogue, see [Database / migrations](#database-migrations) and the city-list interpretation under [Trade-offs](#trade-offs)                                              |
-| `GET /api/weather?latitude={n}&longitude={n}[&date={YYYY-MM-DD}]` | Bearer             | `200 WeatherReport`; 400 invalid/out-of-range coordinates or a malformed/nonexistent `date`; 400 `FORECAST_DATE_OUT_OF_RANGE` for a real date outside `allowedForecastDates` (range in `details`); 502/504 on an Open-Meteo failure |
-| `GET /api/city-description?title={string}`                        | Bearer             | `200 CityDescription`; missing/disambiguation page → `200` with `description: null` (not an error); 400 missing title; 502/504 on a Wikipedia failure                                                                               |
-| `GET /api/location`                                               | Bearer             | `200 DetectedLocation`; every detection failure (local dev, provider outage/rate-limit, an IP it can't place) is a `200` fallback, never an error, see [IP-based geolocation](#ip-based-geolocation)                                |
+| Method & path                                 | Auth               | Purpose                                                                                                                                                                                                                              |
+| --------------------------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `GET /health`                                 | none               | `{ "status": "ok" }` — used by the hosting platform's health check                                                                                                                                                                   |
+| `POST /api/auth/login`                        | none, rate-limited | `{email,password}` → `200 {accessToken, expiresIn, user}`; 400 bad body; 401 invalid credentials                                                                                                                                     |
+| `GET /api/cities`                             | Bearer             | `200 City[]`, sorted alphabetically by name — the static catalogue, see [Database / migrations](#database-migrations) and the city-list interpretation under [Trade-offs](#trade-offs)                                               |
+| `GET /api/weather?latitude={n}&longitude={n}` | Bearer             | `200 WeatherReport`; 400 invalid/out-of-range/blank coordinates; 502/504 on an Open-Meteo failure. No `date` param — see [Timezone / date handling](#timezone-date-handling) for how a forecast date is picked out of `week` instead |
+| `GET /api/city-description?title={string}`    | Bearer             | `200 CityDescription`; missing/disambiguation page → `200` with `description: null` (not an error); 400 missing title; 502/504 on a Wikipedia failure                                                                                |
+| `GET /api/location`                           | Bearer             | `200 DetectedLocation`; every detection failure (local dev, provider outage/rate-limit, an IP it can't place) is a `200` fallback, never an error, see [IP-based geolocation](#ip-based-geolocation)                                 |
 
 Every route except `/health` and `/api/auth/login` requires a valid `Authorization: Bearer`
 header. Every error response uses the same envelope:
@@ -629,13 +628,13 @@ specific endpoint: a literally malformed request body → `400 INVALID_JSON`, an
 10kb limit → `413 PAYLOAD_TOO_LARGE`. Both used to fall through to a generic `500` before a
 review pass caught it — see `middleware/error-handler.ts` and `AI_USAGE.md`.
 
-**`WeatherReport`** (see `services/weather.service.ts` for the exact TypeScript types):
+**`WeatherReport`** (see `types/weather-report.ts` for the exact TypeScript types):
 `{ timezone, localDate, allowedForecastDates: {min, max}, units, current: {observedAt,
 temperature, feelsLike, humidity, windSpeed, isDay, condition: {code, label}}, week:
-DailyForecast[7], selectedDay? }`, where each `DailyForecast` is `{ date, condition,
-temperatureMax, temperatureMin, precipitationProbabilityMax, sunrise, sunset }`. `selectedDay`
-is present only when a valid `date` was requested — the matching entry from `week`, pulled out
-for convenience so the frontend doesn't have to search the array itself.
+DailyForecast[7] }`, where each `DailyForecast` is `{ date, condition, temperatureMax,
+temperatureMin, precipitationProbabilityMax, sunrise, sunset }`. No `selectedDay` field — a
+forecast-date pick is matched against `week` client-side; see
+[Timezone / date handling](#timezone-date-handling).
 
 **`CityDescription`** (see `services/description.service.ts`): `{ title, description: string |
 null, sourceUrl: string | null }`. `description` is Wikipedia's `extract`, truncated at a word
@@ -816,13 +815,11 @@ actually be wrong.
   real boolean), all 7 days mapped in order, `localDate`/`allowedForecastDates` derived from
   `daily.time`, and two "the vendor lied about its own shape" cases (an empty `daily.time`, a
   `daily` array shorter than the others) that surface as a clear thrown error rather than
-  `undefined` silently flowing into the response; `weather.service.ts`'s date handling, with a
-  7-day fixture built once and reused — attaching `selectedDay` for a matching date, both
-  boundaries of `allowedForecastDates` accepted (today and today+5), a date one day before the
-  range and one day after it (today+6 — a real day Open-Meteo returned and that's sitting right
-  there in `week`, but one day narrower than what the picker is allowed to request) both
-  rejected with `ForecastDateOutOfRangeError`, and the thrown error's `details` asserted to
-  actually carry the valid range; and the Open-Meteo client itself (`client.test.ts`) — the
+  `undefined` silently flowing into the response; `weather.service.ts`, a thin pass-through to
+  the Open-Meteo client (it used to also validate a `date` query param — see
+  [Timezone / date handling](#timezone-date-handling) for why that moved client-side), covered
+  for delegating to the client with the given coordinates and for propagating a client rejection
+  rather than swallowing it; and the Open-Meteo client itself (`client.test.ts`) — the
   request it builds (`timezone=auto`, `forecast_days=7`, coordinate query params) and that a
   response flows through the real mapper. `fetchJson`'s timeout/network-failure/non-2xx/invalid-
   JSON-body handling is tested with the global `fetch` stubbed directly (consistent with how the
@@ -875,19 +872,16 @@ Supertest request rather than a unit test of Express's own internals: with `TRUS
 and a spoofed leftmost `X-Forwarded-For` entry, the location service receives the correct
 (rightmost, actually-observed) address — the exact behavior verified empirically while
 designing the feature, now pinned down as a regression test — and with `TRUST_PROXY_HOPS=0`
-(the local-dev default), the header is ignored entirely. `/api/weather`'s tests cover the full
-date-validation chain over real HTTP: a valid `date` reaching the service unchanged, a malformed
-one (`09/27/2026`) and a nonexistent one (`2026-02-30`, a fake fixture never even having to
-model a leap year for this to matter) both rejected as `VALIDATION_ERROR`, and a service-level
-`ForecastDateOutOfRangeError` surfacing as `400` with `FORECAST_DATE_OUT_OF_RANGE` and the valid
-range in `details` — the same shape `TravelPlannerPage`'s frontend recovery logic is written
-against.
+(the local-dev default), the header is ignored entirely. `/api/weather`'s tests cover
+coordinate validation over real HTTP (missing, out-of-range, blank/whitespace, hex/exponential,
+and a repeated query param, alongside the valid-`0` and valid-coordinate happy paths) and the
+structured 502/504 response for an upstream failure.
 
 Coverage (`npm run test:coverage`) covers all of `src/`, excluding only files with no real logic
 to get wrong: `server.ts` (the composition root — `.listen()` and wiring, exercised by the
 integration suite via `createApp()` rather than by a unit test of its own), `db/pool.ts` (a
 one-line `pg.Pool` constructor call), and type-only files (`types/**`, `**/raw-types.ts`). At
-last count: **98.11% statements, 92.46% branches, 100% functions, 98.43% lines** — see the
+last count: **98.38% statements, 92.48% branches, 100% functions, 98.75% lines** — see the
 project's testing matrix for the full requirement-to-test mapping. `vitest.config.ts` also
 enforces a floor (90% statements/lines/functions, 85% branches) so `npm run test:coverage` fails
 CI on a real regression, comfortably below the actual numbers rather than chasing 100%.
@@ -941,21 +935,17 @@ honestly-worded "Couldn't detect your location" notice rather than an error; a t
 `/api/location` failure falls back to the first catalogue city silently; and a manual city
 change clears a previously-shown notice, since it no longer describes anything true.
 
-`useCityData`'s `date` parameter and `errorCode` field are tested directly: a rerender with a
-new date triggers a real refetch (asserted against the actual query string an MSW handler
-receives, not just that _a_ request happened), and a `FORECAST_DATE_OUT_OF_RANGE` response
-surfaces through `errorCode` distinctly from the human-readable `error` message, since
-`TravelPlannerPage`'s recovery logic switches on the former. `ForecastDatePicker` and
-`SelectedDayCard` each get focused rendering tests. `TravelPlannerPage`'s date-related tests:
+`useCityData`'s `errorCode` field is tested directly, surfacing an `UPSTREAM_ERROR` distinctly
+from the human-readable `error` message and clearing on a successful `retry()`. `ForecastDatePicker`
+and `SelectedDayCard` each get focused rendering tests. `TravelPlannerPage`'s date-related tests:
 picking a date renders the selected-day card with the right data (scoped with `within()`, since
 the same day's temperature is _also_ visible in the still-rendered week strip — an
-ambiguous-query trap the test deliberately avoids); switching cities resets the date to empty
-and the switch's own weather request never carries the old date at all (asserted against the
-actual query string, proving it's cleared _before_ that request goes out, not just that the UI
-resets afterward — the proactive-clearing path); and, separately, the same city's allowed range
-shifting between one request and the next (e.g. time passing) still recovers via
-`FORECAST_DATE_OUT_OF_RANGE` without any city change (the reactive-clearing path), reproduced as
-a real race between a user action and a server rejection rather than only argued for in prose.
+ambiguous-query trap the test deliberately avoids) _without_ a second `/api/weather` request
+(asserted against a request counter, not just against what's on screen — the specific regression
+this change fixed); switching cities resets the date to empty; and a hand-typed date outside
+`allowedForecastDates` is cleared back to empty with no error and, again, no network request —
+the one remaining way to end up with an invalid `selectedDate` now that a date pick never talks
+to the server at all (see [Timezone / date handling](#timezone-date-handling)).
 
 **End-to-end, `e2e/`, is a different kind of test from everything above** — real backend and
 frontend dev servers, a real (test) database, and a real Chromium browser driven by
@@ -982,16 +972,19 @@ The one spec (`tests/happy-path.spec.ts`) walks the full path a reviewer would a
 log in → the default city (Calgary, via the real loopback/local-development detection path)
 loads with real description/current/week data → switch to a second city (Tokyo) and confirm the
 _displayed_ data actually changes, not just the dropdown's value → pick a forecast date and
-confirm the selected-day card shows that specific day's distinct fixture temperature, proving
-the date picker drives a real request/response round trip end to end. This was verified to
-actually catch a regression, not just pass vacuously: deliberately corrupting a fixture value
-made the test fail with a clear, real diff between expected and rendered text, then passed
-clean again once reverted.
+confirm the selected-day card shows that specific day's distinct fixture temperature — a
+client-side match against the `week` already on screen (see
+[Timezone / date handling](#timezone-date-handling)), but the fixture data it matches against
+only reached the browser by going through the real backend, Open-Meteo client, and mapper, so a
+real bug anywhere in that chain would still fail this assertion. This was verified to actually
+catch a regression, not just pass vacuously: deliberately corrupting a fixture value made the
+test fail with a clear, real diff between expected and rendered text, then passed clean again
+once reverted.
 
 Frontend coverage (`npm run test:coverage -w @jambo/web`), same scoping philosophy as the
 backend's (real logic, not boilerplate — an explicit `include`/`exclude` in `vite.config.ts`
 keeps test fixtures and MSW handlers themselves out of the denominator): at last count, **97.4%
-statements, 92.94% branches, 96.15% functions, 98.57% lines**, with the same style of enforced
+statements, 92.99% branches, 96.2% functions, 98.57% lines**, with the same style of enforced
 floor (90%/85%/90%/90%) as the backend.
 
 ## Deployment architecture

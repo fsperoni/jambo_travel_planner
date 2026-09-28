@@ -37,24 +37,6 @@ export class UnauthorizedError extends AppError {
 }
 
 /**
- * A syntactically valid `date` query param that's outside the requested
- * city's `allowedForecastDates` — a client mistake (400), not an upstream
- * failure, but distinct enough from a generic ValidationError to carry its
- * own machine-readable `code` and a `details.min`/`max` the frontend can
- * use to recover (see TravelPlannerPage's date-reset-on-city-change logic).
- */
-export class ForecastDateOutOfRangeError extends AppError {
-  constructor(details: { min: string; max: string }) {
-    super(
-      400,
-      "FORECAST_DATE_OUT_OF_RANGE",
-      `date must be between ${details.min} and ${details.max}`,
-      details,
-    );
-  }
-}
-
-/**
  * A third-party API (Open-Meteo, Wikipedia, ipwho.is) timed out, was
  * unreachable, or returned an error status. `status` is *our* response
  * status (502 Bad Gateway for an unreachable/erroring upstream, 504

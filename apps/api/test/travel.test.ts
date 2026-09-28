@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import request from "supertest";
 import type { Express } from "express";
 import { createApp } from "../src/app.js";
-import { ForecastDateOutOfRangeError, UpstreamError } from "../src/errors/app-error.js";
+import { UpstreamError } from "../src/errors/app-error.js";
 import type { City } from "../src/domain/city-catalogue.js";
 import type { DetectedLocation } from "../src/services/location.service.js";
 import type { CityDescription } from "../src/types/city-description.js";
@@ -151,7 +151,7 @@ describe("GET /api/weather", () => {
     );
 
     expect(res.status).toBe(200);
-    expect(getWeatherReport).toHaveBeenCalledWith(0, 0, undefined);
+    expect(getWeatherReport).toHaveBeenCalledWith(0, 0);
   });
 
   it("returns the weather service's report for valid coordinates", async () => {
@@ -165,7 +165,7 @@ describe("GET /api/weather", () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual(report);
-    expect(getWeatherReport).toHaveBeenCalledWith(51.0447, -114.0719, undefined);
+    expect(getWeatherReport).toHaveBeenCalledWith(51.0447, -114.0719);
   });
 
   it("returns a structured 502 when the weather service reports an upstream failure", async () => {
@@ -199,52 +199,6 @@ describe("GET /api/weather", () => {
 
     expect(res.status).toBe(504);
     expect(res.body.error.code).toBe("UPSTREAM_ERROR");
-  });
-
-  it("passes a valid date through to the weather service", async () => {
-    const report = buildWeatherReport();
-    const getWeatherReport = vi.fn().mockResolvedValue(report);
-
-    const res = await authedGet(
-      "/api/weather?latitude=51.0447&longitude=-114.0719&date=2026-09-27",
-      buildApp({ weatherService: createFakeWeatherService({ getWeatherReport }) }),
-    );
-
-    expect(res.status).toBe(200);
-    expect(getWeatherReport).toHaveBeenCalledWith(51.0447, -114.0719, "2026-09-27");
-  });
-
-  it("returns 400 for a date that isn't in YYYY-MM-DD format", async () => {
-    const res = await authedGet(
-      "/api/weather?latitude=51.0447&longitude=-114.0719&date=09/27/2026",
-    );
-
-    expect(res.status).toBe(400);
-    expect(res.body.error.code).toBe("VALIDATION_ERROR");
-  });
-
-  it("returns 400 for a date that doesn't exist on the calendar", async () => {
-    const res = await authedGet(
-      "/api/weather?latitude=51.0447&longitude=-114.0719&date=2026-02-30",
-    );
-
-    expect(res.status).toBe(400);
-    expect(res.body.error.code).toBe("VALIDATION_ERROR");
-  });
-
-  it("returns 400 FORECAST_DATE_OUT_OF_RANGE, with the valid range in details, for a date the service rejects", async () => {
-    const getWeatherReport = vi
-      .fn()
-      .mockRejectedValue(new ForecastDateOutOfRangeError({ min: "2026-09-27", max: "2026-10-02" }));
-
-    const res = await authedGet(
-      "/api/weather?latitude=51.0447&longitude=-114.0719&date=2026-10-05",
-      buildApp({ weatherService: createFakeWeatherService({ getWeatherReport }) }),
-    );
-
-    expect(res.status).toBe(400);
-    expect(res.body.error.code).toBe("FORECAST_DATE_OUT_OF_RANGE");
-    expect(res.body.error.details).toEqual({ min: "2026-09-27", max: "2026-10-02" });
   });
 });
 

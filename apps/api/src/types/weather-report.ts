@@ -36,7 +36,12 @@ export interface WeatherReport {
   localDate: string;
   /** The inclusive range of dates the forecast-date picker may request,
    *  computed from the same 7-day response rather than derived from the
-   *  server's own clock — see the README's timezone handling section. */
+   *  server's own clock — see the README's timezone handling section.
+   *  `week` itself spans one day further (today..+6) than this range
+   *  (today..+5); which specific day a request picks out of `week` is a
+   *  frontend concern now (see TravelPlannerPage) rather than something
+   *  this response attaches — see the README's forecast-date-picker
+   *  section for why that moved client-side. */
   allowedForecastDates: { min: string; max: string };
   units: {
     temperature: string;
@@ -45,10 +50,4 @@ export interface WeatherReport {
   };
   current: CurrentWeather;
   week: DailyForecast[];
-  /** The `week` entry matching a requested `date`, pulled out for
-   *  convenience — present only when the caller asked for a specific
-   *  date. Absent (not `null`) when no date was requested, so the
-   *  frontend can tell "no date picked" apart from "picked a date" with a
-   *  plain `if (report.selectedDay)` rather than a three-state field. */
-  selectedDay?: DailyForecast;
 }

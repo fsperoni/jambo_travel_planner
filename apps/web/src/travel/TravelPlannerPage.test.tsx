@@ -183,7 +183,7 @@ describe("TravelPlannerPage", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
-  it("lets the user pick a forecast date and shows the selected-day card", async () => {
+  it("lets the user pick a forecast date and shows the selected-day card, with no extra request", async () => {
     const selectedDay = {
       date: "2026-09-29",
       condition: { code: 3, label: "Overcast" },
@@ -193,14 +193,14 @@ describe("TravelPlannerPage", () => {
       sunrise: "2026-09-29T07:00",
       sunset: "2026-09-29T19:00",
     };
+    let weatherRequestCount = 0;
 
     server.use(
       http.get(`${API_BASE_URL}/api/cities`, () => HttpResponse.json(MOCK_CITIES)),
-      http.get(`${API_BASE_URL}/api/weather`, ({ request }) => {
-        const url = new URL(request.url);
-        const date = url.searchParams.get("date");
-        return HttpResponse.json({
-          ...buildWeatherReport({
+      http.get(`${API_BASE_URL}/api/weather`, () => {
+        weatherRequestCount += 1;
+        return HttpResponse.json(
+          buildWeatherReport({
             timezone: "UTC",
             current: {
               observedAt: "2026-09-25T12:00",
@@ -213,8 +213,7 @@ describe("TravelPlannerPage", () => {
             },
             week: [selectedDay],
           }),
-          ...(date === selectedDay.date ? { selectedDay } : {}),
-        });
+        );
       }),
     );
 
@@ -223,6 +222,7 @@ describe("TravelPlannerPage", () => {
 
     const datePicker = await screen.findByLabelText("See forecast for a specific day");
     expect(screen.queryByLabelText(/Forecast for/)).not.toBeInTheDocument();
+    await waitFor(() => expect(weatherRequestCount).toBe(1));
 
     await user.type(datePicker, selectedDay.date);
 
@@ -231,21 +231,21 @@ describe("TravelPlannerPage", () => {
     // day, so this scopes the assertion to the selected-day card
     // specifically rather than asserting on ambiguous page-wide text.
     expect(within(selectedDayCard).getByText("15°C")).toBeInTheDocument();
+    // Picking a date matches it against the report already on screen — it
+    // must not trigger a second /api/weather request (and the reload of
+    // the current+week cards that would come with one). See useCityData's
+    // and TravelPlannerPage's own comments for why.
+    expect(weatherRequestCount).toBe(1);
   });
 
-  it("clears the selected date when switching to a different city, and doesn't request a forecast for any date until one is chosen again", async () => {
+  it("clears the selected date when switching to a different city", async () => {
     // A forecast date is a choice about *this* city's calendar — carrying
     // it over to a new city (even one where it happened to still be valid)
     // would be surprising, so a city change always resets to "current +
     // week only" and requires the user to pick a date again.
-    const weatherRequests: Array<string | null> = [];
     server.use(
       http.get(`${API_BASE_URL}/api/cities`, () => HttpResponse.json(MOCK_CITIES)),
-      http.get(`${API_BASE_URL}/api/weather`, ({ request }) => {
-        const date = new URL(request.url).searchParams.get("date");
-        weatherRequests.push(date);
-        return HttpResponse.json(reportWith(10, "Clear"));
-      }),
+      http.get(`${API_BASE_URL}/api/weather`, () => HttpResponse.json(reportWith(10, "Clear"))),
     );
 
     const user = userEvent.setup();
@@ -264,36 +264,22 @@ describe("TravelPlannerPage", () => {
       expect(screen.getByLabelText("See forecast for a specific day")).toHaveValue("");
     });
     expect(screen.queryByLabelText(/Forecast for/)).not.toBeInTheDocument();
-    // The city-switch request itself must not carry the old city's date —
-    // confirms the date is cleared *before* the new request goes out, not
-    // just that the UI resets after the fact.
-    expect(weatherRequests.at(-1)).toBeNull();
   });
 
-  it("recovers from a date that's no longer valid for the same city, without a city change", async () => {
-    // The city-change case above clears the date proactively; this covers
-    // the one remaining path to an out-of-range date: the allowed range
-    // shifting for the *same* city (e.g. time passing) between one weather
-    // fetch and the next.
-    let callCount = 0;
+  it("clears a hand-typed date that falls outside the allowed forecast range, without an error or a network request", async () => {
+    // ForecastDatePicker binds a native <input type="date" min max>, but
+    // typing digits directly bypasses that constraint in most browsers —
+    // this is the one remaining path to an out-of-range `selectedDate`
+    // now that a date pick no longer round-trips through the server's own
+    // range check (see TravelPlannerPage's comment on this effect).
+    let weatherRequestCount = 0;
     server.use(
       http.get(`${API_BASE_URL}/api/cities`, () => HttpResponse.json(MOCK_CITIES)),
-      http.get(`${API_BASE_URL}/api/weather`, ({ request }) => {
-        const date = new URL(request.url).searchParams.get("date");
-        callCount += 1;
-        if (date && callCount > 1) {
-          return HttpResponse.json(
-            {
-              error: {
-                code: "FORECAST_DATE_OUT_OF_RANGE",
-                message: "date must be between 2026-09-26 and 2026-10-01",
-                details: { min: "2026-09-26", max: "2026-10-01" },
-              },
-            },
-            { status: 400 },
-          );
-        }
-        return HttpResponse.json(reportWith(10, "Clear"));
+      http.get(`${API_BASE_URL}/api/weather`, () => {
+        weatherRequestCount += 1;
+        // buildWeatherReport's default allowedForecastDates max is
+        // "2026-09-30" — one day past it is out of range.
+        return HttpResponse.json(buildWeatherReport());
       }),
     );
 
@@ -301,13 +287,16 @@ describe("TravelPlannerPage", () => {
     render(<TravelPlannerPage />);
 
     const datePicker = await screen.findByLabelText("See forecast for a specific day");
-    await user.type(datePicker, "2026-09-29");
+    await waitFor(() => expect(weatherRequestCount).toBe(1));
 
-    // Re-queried inside waitFor — same stale-reference reasoning as above.
-    await waitFor(() => {
-      expect(screen.getByLabelText("See forecast for a specific day")).toHaveValue("");
-    });
+    await user.type(datePicker, "2026-10-01");
+
+    await waitFor(() => expect(datePicker).toHaveValue(""));
+    expect(screen.queryByLabelText(/Forecast for/)).not.toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    // Confirms the recovery is purely client-side — no second request was
+    // made just to find out the date was out of range.
+    expect(weatherRequestCount).toBe(1);
   });
 
   it("clears the location notice once the user manually picks a different city", async () => {

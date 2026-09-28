@@ -10,8 +10,8 @@ const SLOW_CITY = { latitude: 1, longitude: 1 };
 const FAST_CITY = { latitude: 2, longitude: 2 };
 
 // `marker` stands in for whatever field a test needs to tell two responses
-// apart (which city responded, which date was requested, etc.) — timezone
-// is a convenient string field for that, not meaningful here otherwise.
+// apart (which city responded, etc.) — timezone is a convenient string
+// field for that, not meaningful here otherwise.
 function makeReport(marker: string) {
   return buildWeatherReport({ timezone: marker });
 }
@@ -74,7 +74,7 @@ describe("useCityData", () => {
     expect(result.current.weather?.timezone).toBe("fast-city-response");
   });
 
-  it("surfaces an error message when the request fails", async () => {
+  it("surfaces an ApiError's message and code when the request fails", async () => {
     server.use(
       http.get(`${API_BASE_URL}/api/weather`, () =>
         HttpResponse.json(
@@ -87,10 +87,11 @@ describe("useCityData", () => {
     const { result } = renderHook(() => useCityData(51.05, -114.07));
 
     await waitFor(() => expect(result.current.error).toBe("Weather is unavailable"));
+    expect(result.current.errorCode).toBe("UPSTREAM_ERROR");
     expect(result.current.weather).toBeNull();
   });
 
-  it("retry() re-fetches for the same coordinates", async () => {
+  it("retry() re-fetches for the same coordinates and clears the previous error/errorCode", async () => {
     let callCount = 0;
     server.use(
       http.get(`${API_BASE_URL}/api/weather`, () => {
@@ -106,78 +107,12 @@ describe("useCityData", () => {
     );
 
     const { result } = renderHook(() => useCityData(51.05, -114.07));
-    await waitFor(() => expect(result.current.error).toBe("fail"));
+    await waitFor(() => expect(result.current.errorCode).toBe("UPSTREAM_ERROR"));
 
     result.current.retry();
 
     await waitFor(() => expect(result.current.weather?.timezone).toBe("recovered"));
     expect(result.current.error).toBeNull();
-  });
-
-  it("passes the date through to the request and re-fetches when it changes", async () => {
-    server.use(
-      http.get(`${API_BASE_URL}/api/weather`, ({ request }) => {
-        const url = new URL(request.url);
-        const date = url.searchParams.get("date");
-        return HttpResponse.json(makeReport(date ?? "no-date"));
-      }),
-    );
-
-    const { result, rerender } = renderHook(
-      ({ date }: { date: string | null }) => useCityData(51.05, -114.07, date),
-      { initialProps: { date: null as string | null } },
-    );
-
-    await waitFor(() => expect(result.current.weather?.timezone).toBe("no-date"));
-
-    rerender({ date: "2026-09-29" });
-
-    await waitFor(() => expect(result.current.weather?.timezone).toBe("2026-09-29"));
-  });
-
-  it("exposes the error's code alongside its message", async () => {
-    server.use(
-      http.get(`${API_BASE_URL}/api/weather`, () =>
-        HttpResponse.json(
-          {
-            error: {
-              code: "FORECAST_DATE_OUT_OF_RANGE",
-              message: "date must be between 2026-09-27 and 2026-10-02",
-              details: { min: "2026-09-27", max: "2026-10-02" },
-            },
-          },
-          { status: 400 },
-        ),
-      ),
-    );
-
-    const { result } = renderHook(() => useCityData(51.05, -114.07, "2026-10-05"));
-
-    await waitFor(() => expect(result.current.errorCode).toBe("FORECAST_DATE_OUT_OF_RANGE"));
-    expect(result.current.error).toBe("date must be between 2026-09-27 and 2026-10-02");
-  });
-
-  it("clears the previous error code once a request succeeds", async () => {
-    let callCount = 0;
-    server.use(
-      http.get(`${API_BASE_URL}/api/weather`, () => {
-        callCount += 1;
-        if (callCount === 1) {
-          return HttpResponse.json(
-            { error: { code: "FORECAST_DATE_OUT_OF_RANGE", message: "out of range" } },
-            { status: 400 },
-          );
-        }
-        return HttpResponse.json(makeReport("recovered"));
-      }),
-    );
-
-    const { result } = renderHook(() => useCityData(51.05, -114.07, "2026-10-05"));
-    await waitFor(() => expect(result.current.errorCode).toBe("FORECAST_DATE_OUT_OF_RANGE"));
-
-    result.current.retry();
-
-    await waitFor(() => expect(result.current.weather?.timezone).toBe("recovered"));
     expect(result.current.errorCode).toBeNull();
   });
 });

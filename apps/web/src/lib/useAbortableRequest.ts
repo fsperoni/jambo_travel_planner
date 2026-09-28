@@ -5,10 +5,10 @@ export interface AbortableRequestState<T> {
   data: T | null;
   isLoading: boolean;
   error: string | null;
-  /** Mirrors the backend's `error.code` (e.g. "FORECAST_DATE_OUT_OF_RANGE")
-   *  — exposed so a caller can react to a *specific* failure without this
-   *  hook needing to know what that reaction should be. `null` whenever
-   *  `error` is, and also whenever a non-ApiError failure occurred. */
+  /** Mirrors the backend's `error.code` (e.g. "UPSTREAM_ERROR") — exposed
+   *  so a caller can react to a *specific* failure without this hook
+   *  needing to know what that reaction should be. `null` whenever `error`
+   *  is, and also whenever a non-ApiError failure occurred. */
   errorCode: string | null;
   /** Re-runs `request` for the current `key`. Needed because a failure for
    *  the *current* key has no other way to retry — a `key` change

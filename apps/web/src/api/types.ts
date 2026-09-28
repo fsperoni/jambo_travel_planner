@@ -57,6 +57,10 @@ export interface DailyForecast {
 export interface WeatherReport {
   timezone: string;
   localDate: string;
+  /** The inclusive range of dates `<ForecastDatePicker>` may request.
+   *  `week` spans one day further (today..+6) than this range
+   *  (today..+5) — see TravelPlannerPage for how a selected date is
+   *  matched against `week` and bounded by this range. */
   allowedForecastDates: { min: string; max: string };
   units: {
     temperature: string;
@@ -65,9 +69,6 @@ export interface WeatherReport {
   };
   current: CurrentWeather;
   week: DailyForecast[];
-  /** The `week` entry matching a requested forecast date — present only
-   *  when the caller asked for one (see `getWeather`'s `date` param). */
-  selectedDay?: DailyForecast;
 }
 
 export interface CityDescription {
