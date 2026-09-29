@@ -130,7 +130,7 @@ OpenWeatherMap, which needs a key and doesn't offer that same automatic-timezone
 Open-Meteo's free tier is licensed CC BY 4.0, which requires attribution — the app shows
 "Weather data by Open-Meteo.com" beneath the forecast, linked back to the provider.
 
-The free tier rate-limits by *source IP*, not by account — confirmed as the cause of a real
+The free tier rate-limits by _source IP_, not by account — confirmed as the cause of a real
 production outage (`502 UPSTREAM_ERROR`, upstream `429`) rather than assumed: a direct request
 from an unrelated network succeeded at the same time the deployed app was failing, ruling out an
 Open-Meteo-wide outage, and Render's own docs confirm non-dedicated services share an outbound
