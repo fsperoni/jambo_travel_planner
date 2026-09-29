@@ -15,9 +15,12 @@ export interface OpenMeteoClient {
 /**
  * `baseUrl` is a constructor argument (from `env.OPEN_METEO_BASE_URL`), not
  * a hardcoded literal — integration tests point this at a local stub
- * server instead of hitting the real Open-Meteo API.
+ * server instead of hitting the real Open-Meteo API. `apiKey` (from
+ * `env.OPEN_METEO_API_KEY`) is unset for the free tier; when set, it's sent
+ * as `X-Api-Key` rather than the `apikey` query param Open-Meteo also
+ * accepts, so it never ends up in a logged request URL.
  */
-export function createOpenMeteoClient(baseUrl: string): OpenMeteoClient {
+export function createOpenMeteoClient(baseUrl: string, apiKey?: string): OpenMeteoClient {
   return {
     async getForecast(latitude, longitude) {
       const url = new URL("/v1/forecast", baseUrl);
@@ -33,6 +36,7 @@ export function createOpenMeteoClient(baseUrl: string): OpenMeteoClient {
 
       const raw = await fetchJson<OpenMeteoForecastResponse>(url.toString(), {
         timeoutMs: UPSTREAM_TIMEOUT_MS,
+        headers: apiKey ? { "X-Api-Key": apiKey } : undefined,
       });
       return mapForecastResponse(raw);
     },

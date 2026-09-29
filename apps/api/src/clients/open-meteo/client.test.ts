@@ -71,6 +71,32 @@ describe("Open-Meteo client", () => {
     expect(url.searchParams.get("daily")).toContain("weather_code");
   });
 
+  it("sends no X-Api-Key header when no key is configured", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify(rawResponse()), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = createOpenMeteoClient("https://api.open-meteo.com");
+    await client.getForecast(51.0447, -114.0719);
+
+    const [, requestInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(requestInit.headers).toBeUndefined();
+  });
+
+  it("sends the configured key as an X-Api-Key header, e.g. for a paid Open-Meteo plan", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(JSON.stringify(rawResponse()), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = createOpenMeteoClient("https://customer-api.open-meteo.com", "test-api-key");
+    await client.getForecast(51.0447, -114.0719);
+
+    const [, requestInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(requestInit.headers).toEqual({ "X-Api-Key": "test-api-key" });
+  });
+
   it("maps the response through the real mapper into a WeatherReport", async () => {
     vi.stubGlobal(
       "fetch",

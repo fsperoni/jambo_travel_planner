@@ -41,6 +41,14 @@ const envSchema = z.object({
   // local stub server instead of the real API — see clients/open-meteo/.
   OPEN_METEO_BASE_URL: z.url().default("https://api.open-meteo.com"),
 
+  // Unset for the free tier (no key needed there). Set alongside
+  // OPEN_METEO_BASE_URL=https://customer-api.open-meteo.com to use a paid
+  // Open-Meteo plan instead — the free tier's per-IP rate limit is shared
+  // with every other tenant on the same egress IP, which a PaaS host
+  // without a dedicated outbound IP (e.g. Render) can't isolate this app
+  // from. See clients/open-meteo/client.ts for how it's sent.
+  OPEN_METEO_API_KEY: z.string().min(1).optional(),
+
   // Overridable for the same reason as OPEN_METEO_BASE_URL — see clients/wikipedia/.
   WIKIPEDIA_BASE_URL: z.url().default("https://en.wikipedia.org"),
 

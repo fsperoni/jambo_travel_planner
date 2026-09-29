@@ -130,6 +130,15 @@ OpenWeatherMap, which needs a key and doesn't offer that same automatic-timezone
 Open-Meteo's free tier is licensed CC BY 4.0, which requires attribution — the app shows
 "Weather data by Open-Meteo.com" beneath the forecast, linked back to the provider.
 
+The free tier rate-limits by *source IP*, not by account — confirmed as the cause of a real
+production outage (`502 UPSTREAM_ERROR`, upstream `429`) rather than assumed: a direct request
+from an unrelated network succeeded at the same time the deployed app was failing, ruling out an
+Open-Meteo-wide outage, and Render's own docs confirm non-dedicated services share an outbound
+IP range per region with other customers. `OPEN_METEO_API_KEY` (see
+[Environment variables](#environment-variables)) exists for this: set alongside
+`OPEN_METEO_BASE_URL=https://customer-api.open-meteo.com`, it moves this app onto a paid plan
+whose quota is tied to the key instead of the shared IP.
+
 **City description: the [Wikipedia REST API](https://en.wikipedia.org/api/rest_v1/)**
 (`page/summary/{title}`). Free, no API key, and its `extract` field is already
 plain-paragraph text — no HTML to sanitize or strip client-side, which matters since that text
@@ -719,6 +728,7 @@ start if one is missing or malformed, with a message naming the offending variab
 | `JWT_SECRET`               | **yes**  | —                                              | HS256 signing secret for access tokens; at least 32 characters                                                                                                                                                                                                                                                                   |
 | `ACCESS_TOKEN_TTL_SECONDS` | no       | `900` (15 min)                                 | How long an access token stays valid, in seconds                                                                                                                                                                                                                                                                                 |
 | `OPEN_METEO_BASE_URL`      | no       | `https://api.open-meteo.com`                   | Base URL for the weather client — overridden in integration tests to point at a local stub, never at the real API                                                                                                                                                                                                                |
+| `OPEN_METEO_API_KEY`       | no       | unset (free tier)                              | Sent as `X-Api-Key` when set; pairs with `OPEN_METEO_BASE_URL=https://customer-api.open-meteo.com` for a paid Open-Meteo plan, whose quota is tied to the key rather than shared with every other tenant on the host's outbound IP — see [Why these external APIs](#why-these-external-apis)                                     |
 | `WIKIPEDIA_BASE_URL`       | no       | `https://en.wikipedia.org`                     | Base URL for the description client — same overridable-for-tests reasoning as `OPEN_METEO_BASE_URL`                                                                                                                                                                                                                              |
 | `WIKIPEDIA_USER_AGENT`     | no       | a local-dev-only placeholder, no personal info | Sent as the `User-Agent` header on every Wikipedia request, per [Wikimedia's policy](https://foundation.wikimedia.org/wiki/Policy:Wikimedia_Foundation_User-Agent_Policy) — set this to a real contact URL for production; see [Why these external APIs](#why-these-external-apis)                                               |
 | `IP_GEOLOCATION_BASE_URL`  | no       | `https://ipwho.is`                             | Base URL for the IP-geolocation client — same overridable-for-tests reasoning as the other two base URLs                                                                                                                                                                                                                         |

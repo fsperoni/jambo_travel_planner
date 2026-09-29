@@ -28,7 +28,7 @@ const authService = createAuthService({
   tokenService,
   accessTokenTtlSeconds: env.ACCESS_TOKEN_TTL_SECONDS,
 });
-const openMeteoClient = createOpenMeteoClient(env.OPEN_METEO_BASE_URL);
+const openMeteoClient = createOpenMeteoClient(env.OPEN_METEO_BASE_URL, env.OPEN_METEO_API_KEY);
 const weatherService = createWeatherService({ openMeteoClient });
 const wikipediaClient = createWikipediaClient(env.WIKIPEDIA_BASE_URL, env.WIKIPEDIA_USER_AGENT);
 const descriptionService = createDescriptionService({ wikipediaClient });
